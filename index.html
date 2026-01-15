@@ -452,7 +452,7 @@
         const modalContainer = document.getElementById('modals');
         const offlineBadge = document.getElementById('offline-badge');
 
-        // ⭐ INITIALIZE APP ON LOAD - Versione semplificata come nel codice vecchio che funzionava
+        // ⭐ INITIALIZE APP ON LOAD - Versione che funzionava
         document.addEventListener('DOMContentLoaded', async () => {
             console.log("🚀 App Loading...");
             const isLoggedIn = sessionManager.isLoggedIn();
@@ -466,13 +466,10 @@
                 if (cachedTasks) {
                     try {
                         const parsed = JSON.parse(cachedTasks);
-                        // ⭐ Ricostruisci dateObj se mancante (quando viene caricato da localStorage)
+                        // ⭐ Ricostruisci dateObj da due_date quando viene caricato da localStorage
                         state.tasks = parsed.map(t => {
-                            if (t.due_date && !t.dateObj) {
+                            if (t.due_date) {
                                 t.dateObj = new Date(t.due_date);
-                                t.hasValidDate = !isNaN(t.dateObj.getTime());
-                            } else if (t.dateObj && typeof t.dateObj === 'string') {
-                                t.dateObj = new Date(t.dateObj);
                                 t.hasValidDate = !isNaN(t.dateObj.getTime());
                             }
                             return t;
@@ -498,7 +495,7 @@
                     localStorage.setItem('argo_user', JSON.stringify(state.user));
                 }
                 
-                // ⭐ CRITICO: Carica voti e promemoria da localStorage
+                // ⭐ Carica voti e promemoria da localStorage
                 const cachedVoti = localStorage.getItem('argo_voti');
                 if (cachedVoti) {
                     try {
@@ -526,7 +523,7 @@
                 state.view = 'home';
                 render();
 
-                // ⭐ Sync in background passando la sessione salvata (come nel codice vecchio)
+                // ⭐ Sync in background passando la sessione salvata
                 console.log("🔄 Sincronizzazione in background...");
                 await performSync(savedSession);
             } else {
@@ -769,7 +766,7 @@
             const today = new Date();
             today.setHours(0, 0, 0, 0);
 
-            // ⭐ Recupera stato 'done' persistito PRIMA di formattare
+            // ⭐ Recupera stato 'done' persistito
             const localTasks = JSON.parse(localStorage.getItem('argo_tasks') || '[]');
 
             const formatted = newTasks.map(t => {
@@ -796,23 +793,10 @@
                 };
             });
 
-            // ⭐ Filtra e Ordina - mantieni anche quelli senza data valida per debug
+            // ⭐ Filtra e Ordina - SOLO quelli con data valida e non scaduti
             state.tasks = formatted
-                .filter(t => {
-                    // Mantieni se ha data valida E non è passata, oppure se non ha data (per debug)
-                    if (!t.hasValidDate) {
-                        console.warn("⚠️ Task senza data valida:", t.text, "rawDate:", t.display_date);
-                        return true; // Mantieni per vedere cosa c'è
-                    }
-                    return t.dateObj >= today;
-                })
-                .sort((a, b) => {
-                    // Prima quelli con data valida, poi quelli senza
-                    if (!a.hasValidDate && !b.hasValidDate) return 0;
-                    if (!a.hasValidDate) return 1;
-                    if (!b.hasValidDate) return -1;
-                    return a.dateObj - b.dateObj;
-                });
+                .filter(t => t.hasValidDate && t.dateObj >= today)
+                .sort((a, b) => a.dateObj - b.dateObj);
 
             saveTasks();
             if (shouldRender) render();
@@ -1716,10 +1700,9 @@
                         console.log("💾 User salvato:", state.user.name);
                     }
                     
-                    // ⭐ Carica compiti
+                    // ⭐ Carica compiti con updateTasks per preservare date
                     if (data.tasks && data.tasks.length > 0) {
-                        state.tasks = data.tasks.map(t => ({ id: t.id, text: t.text, done: false }));
-                        saveTasks();
+                        updateTasks(data.tasks, false);
                         console.log("✅ Compiti caricati:", state.tasks.length);
                     }
                     
