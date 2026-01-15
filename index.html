@@ -452,7 +452,7 @@
         const modalContainer = document.getElementById('modals');
         const offlineBadge = document.getElementById('offline-badge');
 
-        // ⭐ INITIALIZE APP ON LOAD - Versione che funzionava
+        // ⭐ INITIALIZE APP ON LOAD
         document.addEventListener('DOMContentLoaded', async () => {
             console.log("🚀 App Loading...");
             const isLoggedIn = sessionManager.isLoggedIn();
@@ -460,72 +460,46 @@
 
             if (isLoggedIn && savedSession) {
                 console.log("✅ Sessione valida trovata!");
-                
-                // ⭐ Carica tasks con done persistito e ricostruisci dateObj
+                // ⭐ Carica tasks con done persistito
                 const cachedTasks = localStorage.getItem('argo_tasks');
                 if (cachedTasks) {
                     try {
-                        const parsed = JSON.parse(cachedTasks);
-                        // ⭐ Ricostruisci dateObj da due_date quando viene caricato da localStorage
-                        state.tasks = parsed.map(t => {
-                            if (t.due_date) {
-                                t.dateObj = new Date(t.due_date);
-                                t.hasValidDate = !isNaN(t.dateObj.getTime());
-                            }
-                            return t;
-                        });
-                        console.log("📦 Compiti caricati:", state.tasks.length);
+                        state.tasks = JSON.parse(cachedTasks); // ⭐ Mantiene done
+                        console.log("📦 Compiti caricati con stato done:", state.tasks.length);
                     } catch (e) {
                         console.error("Errore cache tasks:", e);
                         state.tasks = [];
                     }
                 }
-                
                 // ⭐ Carica user da localStorage
                 const cachedUser = localStorage.getItem('argo_user');
                 if (cachedUser) {
-                    try {
-                        state.user = JSON.parse(cachedUser);
-                        console.log("👤 Utente caricato:", state.user.name);
-                    } catch (e) {
-                        console.error("Errore caricamento user:", e);
-                    }
+                    state.user = JSON.parse(cachedUser);
                 } else if (savedSession.student) {
                     state.user = savedSession.student;
                     localStorage.setItem('argo_user', JSON.stringify(state.user));
                 }
-                
-                // ⭐ Carica voti e promemoria da localStorage
-                const cachedVoti = localStorage.getItem('argo_voti');
-                if (cachedVoti) {
-                    try {
-                        state.voti = JSON.parse(cachedVoti);
-                        console.log("📊 Voti caricati da cache:", state.voti.length);
-                    } catch (e) {
-                        console.error("Errore caricamento voti:", e);
-                        state.voti = [];
-                    }
-                }
-                
-                const cachedProm = localStorage.getItem('argo_promemoria');
-                if (cachedProm) {
-                    try {
-                        state.promemoria = JSON.parse(cachedProm);
-                        console.log("📢 Promemoria caricati da cache:", state.promemoria.length);
-                    } catch (e) {
-                        console.error("Errore caricamento promemoria:", e);
-                        state.promemoria = [];
-                    }
-                }
-                
                 state.isLoggedIn = true;
-                state.didup.connected = true;
                 state.view = 'home';
+
+                // Restore other data
+                const cachedVoti = localStorage.getItem('argo_voti');
+                if (cachedVoti) state.voti = JSON.parse(cachedVoti);
+                const cachedProm = localStorage.getItem('argo_promemoria');
+                if (cachedProm) state.promemoria = JSON.parse(cachedProm);
+
+                const cachedGrades = localStorage.getItem('argo_grades');
+                if (cachedGrades) state.grades = JSON.parse(cachedGrades);
+                const cachedAnn = localStorage.getItem('argo_announcements');
+                if (cachedAnn) state.announcements = JSON.parse(cachedAnn);
+                const cachedRem = localStorage.getItem('argo_reminders');
+                if (cachedRem) state.reminders = JSON.parse(cachedRem);
+
                 render();
 
-                // ⭐ Sync in background passando la sessione salvata
+                // Sync in background
                 console.log("🔄 Sincronizzazione in background...");
-                await performSync(savedSession);
+                await performSync(); // ⭐ performSync ora gestisce le credenziali internamente
             } else {
                 console.log("❌ No session - showing login");
                 state.isLoggedIn = false;
@@ -542,21 +516,38 @@
             }
         }
 
-        async function performSync(sessionData) {
+        async function performSync() {
             if (state.syncing) return;
             state.syncing = true;
             render();
-            
-            // ⭐ Usa la sessione passata o carica quella salvata (come nel codice vecchio)
-            if (!sessionData) sessionData = sessionManager.load();
-            if (!sessionData) {
-                console.warn("⚠️ Nessuna sessione disponibile per sync");
-                state.syncing = false;
-                return;
-            }
 
             try {
-                console.log("📤 Invio richiesta sync con sessione salvata");
+                // ⭐ Prova prima con le credenziali separate
+                const schoolCode = localStorage.getItem('argo_school');
+                const storedUser = localStorage.getItem('argo_user_cred');
+                const storedPass = localStorage.getItem('argo_pass');
+                
+                // ⭐ Fallback: se non ci sono credenziali separate, usa la sessione salvata
+                const savedSession = sessionManager.load();
+                
+                let requestBody;
+                if (schoolCode && storedUser && storedPass) {
+                    // Usa credenziali separate (metodo nuovo)
+                    requestBody = {
+                        schoolCode: schoolCode,
+                        storedUser: storedUser,
+                        storedPass: storedPass
+                    };
+                    console.log("🔄 Sync con credenziali separate");
+                } else if (savedSession) {
+                    // Usa sessione completa (metodo vecchio)
+                    requestBody = savedSession;
+                    console.log("🔄 Sync con sessione salvata");
+                } else {
+                    throw new Error("Nessuna credenziale disponibile. Effettua il login.");
+                }
+
+                console.log("📤 Invio richiesta sync a:", `${API_BASE_URL}/sync`);
                 
                 const response = await fetch(`${API_BASE_URL}/sync`, {
                     method: 'POST',
@@ -564,11 +555,12 @@
                         'Content-Type': 'application/json',
                         'Accept': 'application/json'
                     },
-                    body: JSON.stringify(sessionData)
+                    body: JSON.stringify(requestBody)
                 });
 
                 if (!response.ok) {
-                    throw new Error(`Server error: ${response.status}`);
+                    const errorText = await response.text();
+                    throw new Error(`HTTP ${response.status}: ${errorText}`);
                 }
 
                 const data = await response.json();
@@ -577,56 +569,59 @@
                     tasksCount: data.tasks?.length || 0,
                     votiCount: data.voti?.length || 0,
                     promemoriaCount: data.promemoria?.length || data.announcements?.length || 0,
-                    error: data.error
+                    error: data.error,
+                    rawData: data
                 });
                 
                 // ⭐ DEBUG: Mostra dettagli completi in console
-                if (data.tasks && data.tasks.length > 0) console.log("📋 Tasks ricevuti:", data.tasks);
-                
-                // ⭐ DEBUG CRITICO per voti
-                console.log("🎓 DEBUG VOTI - data.voti:", data.voti);
-                console.log("🎓 DEBUG VOTI - tipo:", typeof data.voti, "è array?", Array.isArray(data.voti));
-                if (data.voti) {
-                    console.log("🎓 DEBUG VOTI - lunghezza:", data.voti.length);
-                    console.log("🎓 DEBUG VOTI - primo elemento:", data.voti[0]);
-                }
-                
-                if (data.promemoria && data.promemoria.length > 0) console.log("📋 Promemoria ricevuti:", data.promemoria);
-                if (data.announcements && data.announcements.length > 0) console.log("📋 Announcements ricevuti:", data.announcements);
+                if (data.tasks) console.log("📋 Tasks ricevuti:", data.tasks);
+                if (data.voti) console.log("📋 Voti ricevuti:", data.voti);
+                if (data.promemoria) console.log("📋 Promemoria ricevuti:", data.promemoria);
+                if (data.announcements) console.log("📋 Announcements ricevuti:", data.announcements);
 
-                if (data.success && data.tasks) {
-                    // ⭐ Gestione compiti (come nel codice vecchio)
-                    if (data.tasks.length === 0 && state.tasks.length > 0) {
-                        console.warn("⚠️ Il server ha mandato 0 compiti. Mantengo quelli locali per sicurezza.");
-                        state.isOffline = false;
-                        updateOfflineBadge();
-                        render();
-                        state.syncing = false;
-                        return;
+                if (data.success) {
+                    // Aggiorna i compiti
+                    if (data.tasks && Array.isArray(data.tasks) && data.tasks.length > 0) {
+                        updateTasks(data.tasks);
+                        console.log("✅ Compiti aggiornati:", state.tasks.length);
+                    } else {
+                        console.warn("⚠️ Nessun compito ricevuto o array vuoto");
                     }
-                    updateTasks(data.tasks, true);
-                    
-                    // ⭐ CRITICO: Aggiorna voti e salva SEMPRE
-                    if (data.voti !== undefined) {
-                        state.voti = Array.isArray(data.voti) ? data.voti : [];
-                        localStorage.setItem('argo_voti', JSON.stringify(state.voti));
-                        console.log("💾 Voti salvati:", state.voti.length);
-                        if (state.voti.length === 0) {
-                            console.warn("⚠️ Array voti vuoto - il backend potrebbe non recuperare i voti da DidUP");
+
+                    // Aggiorna i voti e salva in localStorage
+                    if (data.voti && Array.isArray(data.voti)) {
+                        state.voti = data.voti;
+                        try {
+                            localStorage.setItem('argo_voti', JSON.stringify(state.voti));
+                            console.log("💾 Voti salvati:", state.voti.length);
+                            if (state.voti.length === 0) {
+                                console.warn("⚠️ Array voti vuoto - il backend potrebbe non recuperare i voti da DidUP");
+                            }
+                        } catch (e) {
+                            console.error("❌ Errore salvataggio voti:", e);
                         }
+                    } else {
+                        console.warn("⚠️ Nessun voto ricevuto o formato non valido");
                     }
-                    
-                    // ⭐ CRITICO: Aggiorna promemoria e salva SEMPRE
-                    const promemoriaData = data.promemoria || data.announcements;
-                    if (promemoriaData !== undefined) {
-                        state.promemoria = Array.isArray(promemoriaData) ? promemoriaData : [];
-                        localStorage.setItem('argo_promemoria', JSON.stringify(state.promemoria));
-                        console.log("💾 Promemoria salvati:", state.promemoria.length);
-                        if (state.promemoria.length === 0) {
+
+                    // Aggiorna la bacheca (promemoria) e salva in localStorage
+                    const promemoriaData = data.promemoria || data.announcements || [];
+                    if (Array.isArray(promemoriaData)) {
+                        state.promemoria = promemoriaData;
+                        if (state.promemoria.length > 0) {
+                            try {
+                                localStorage.setItem('argo_promemoria', JSON.stringify(state.promemoria));
+                                console.log("💾 Promemoria salvati:", state.promemoria.length);
+                            } catch (e) {
+                                console.error("❌ Errore salvataggio promemoria:", e);
+                            }
+                        } else {
                             console.warn("⚠️ Array promemoria vuoto - il backend potrebbe non recuperare i promemoria da DidUP");
                         }
+                    } else {
+                        console.warn("⚠️ Nessun promemoria ricevuto o formato non valido");
                     }
-                    
+
                     state.lastSync = new Date().toLocaleTimeString();
                     state.isOffline = false;
                     state.didup.connected = true;
@@ -635,31 +630,57 @@
                         voti: state.voti.length,
                         promemoria: state.promemoria.length
                     });
-                    updateOfflineBadge();
-                    render();
-                } else {
-                    throw new Error("Sessione non valida");
-                }
-            } catch (e) {
-                console.error("⚠️ Errore Sync:", e);
-                if (e.message.includes("Sessione non valida")) {
-                    // ⭐ Prova silent login se abbiamo le credenziali (come nel codice vecchio)
-                    if (sessionData && sessionData.storedUser && sessionData.storedPass) {
-                        await performSilentLogin(sessionData.schoolCode, sessionData.storedUser, sessionData.storedPass);
-                    } else {
-                        sessionManager.clear();
-                        state.isLoggedIn = false;
-                        state.view = 'login';
-                        alert("❌ Sessione scaduta. Effettua di nuovo il login.");
-                        render();
-                    }
                 } else {
                     state.isOffline = true;
-                    updateOfflineBadge();
-                    render();
+                    const errorMsg = data.error || "Errore sconosciuto";
+                    console.warn("⚠️ Sync fallito:", errorMsg);
+                    
+                    // Se la sessione è scaduta, chiedi di rifare login
+                    if (errorMsg.includes('sessione') || errorMsg.includes('scaduta') || errorMsg.includes('expired') || errorMsg.includes('invalid') || errorMsg.includes('login')) {
+                        if (confirm("⚠️ La sessione è scaduta. Vuoi effettuare nuovamente il login?")) {
+                            sessionManager.clear();
+                            state.isLoggedIn = false;
+                            state.view = 'login';
+                            render();
+                            openArgoLogin();
+                        }
+                        return;
+                    }
+                }
+            } catch (e) {
+                console.error("❌ Errore sync:", e);
+                state.isOffline = true;
+                
+                // Mostra messaggio all'utente se è un errore di rete
+                if (e.name === 'TypeError' && e.message.includes('fetch')) {
+                    console.warn("⚠️ Errore di connessione - usando dati cached");
+                    // Carica dati cached se disponibili
+                    const cachedVoti = localStorage.getItem('argo_voti');
+                    if (cachedVoti) {
+                        try {
+                            state.voti = JSON.parse(cachedVoti);
+                            console.log("📦 Voti caricati da cache:", state.voti.length);
+                        } catch (err) {
+                            console.error("Errore parsing voti cached:", err);
+                        }
+                    }
+                    const cachedProm = localStorage.getItem('argo_promemoria');
+                    if (cachedProm) {
+                        try {
+                            state.promemoria = JSON.parse(cachedProm);
+                            console.log("📦 Promemoria caricati da cache:", state.promemoria.length);
+                        } catch (err) {
+                            console.error("Errore parsing promemoria cached:", err);
+                        }
+                    }
+                    alert("⚠️ Errore di connessione al server. Verifica la connessione internet.");
+                } else {
+                    alert("❌ Errore durante la sincronizzazione: " + e.message);
                 }
             } finally {
                 state.syncing = false;
+                updateOfflineBadge();
+                render();
             }
         }
 
@@ -701,31 +722,19 @@
                     };
                     sessionManager.save(newSession);
 
-                    // ⭐ Carica TUTTI i dati
-                    if (data.tasks) updateTasks(data.tasks, true);
-                    
-                    // ⭐ CRITICO: Carica voti
-                    if (data.voti !== undefined) {
-                        state.voti = Array.isArray(data.voti) ? data.voti : [];
+                    // ⭐ Carica TUTTI i dati, non solo tasks
+                    if (data.tasks) updateTasks(data.tasks, false);
+                    if (data.voti) {
+                        state.voti = data.voti;
                         localStorage.setItem('argo_voti', JSON.stringify(state.voti));
-                        console.log("✅ Voti caricati nel silent login:", state.voti.length);
                     }
-                    
-                    // ⭐ CRITICO: Carica promemoria
-                    const promemoriaData = data.promemoria || data.announcements;
-                    if (promemoriaData !== undefined) {
-                        state.promemoria = Array.isArray(promemoriaData) ? promemoriaData : [];
+                    if (data.promemoria) {
+                        state.promemoria = data.promemoria;
                         localStorage.setItem('argo_promemoria', JSON.stringify(state.promemoria));
-                        console.log("✅ Promemoria caricati nel silent login:", state.promemoria.length);
                     }
-                    
-                    if (data.student) {
-                        state.user = data.student;
-                        localStorage.setItem('argo_user', JSON.stringify(state.user));
-                    }
+                    if (data.student) state.user = data.student;
 
                     state.isOffline = false;
-                    state.didup.connected = true;
                     state.lastSync = new Date().toLocaleTimeString();
                     updateOfflineBadge();
                     render();
@@ -741,17 +750,7 @@
 
         function saveTasks() {
             try {
-                // ⭐ Salva solo i dati serializzabili (non dateObj che è un oggetto Date)
-                const tasksToSave = state.tasks.map(t => ({
-                    id: t.id,
-                    text: t.text,
-                    subject: t.subject,
-                    due_date: t.due_date,
-                    display_date: t.display_date,
-                    hasValidDate: t.hasValidDate,
-                    done: t.done
-                }));
-                localStorage.setItem('argo_tasks', JSON.stringify(tasksToSave));
+                localStorage.setItem('argo_tasks', JSON.stringify(state.tasks));
                 console.log("💾 Compiti salvati con stato done");
             } catch (e) {
                 console.error("❌ Errore salvataggio tasks:", e);
@@ -766,20 +765,11 @@
             const today = new Date();
             today.setHours(0, 0, 0, 0);
 
-            // ⭐ Recupera stato 'done' persistito
-            const localTasks = JSON.parse(localStorage.getItem('argo_tasks') || '[]');
-
             const formatted = newTasks.map(t => {
                 // ⭐ Gerarchia Affidabilità Date: Consegna > Prova > Pubblicazione
                 let rawDate = t.datCompito || t.due_date || t.dataProva || t.datGiorno || t.date;
                 let dateObj = parseArgoDate(rawDate);
                 let isoDate = dateObj.toISOString().split('T')[0];
-
-                // ⭐ Cerca match per preservare done
-                const match = localTasks.find(l => 
-                    (l.id === t.id) || 
-                    (l.text === (t.text || t.desCompito) && l.subject === (t.subject || t.materia))
-                );
 
                 return {
                     id: t.id || Math.random().toString(36).substr(2, 9),
@@ -789,11 +779,18 @@
                     display_date: rawDate,
                     dateObj: dateObj,
                     hasValidDate: !isNaN(dateObj.getTime()) && dateObj.getTime() > 0,
-                    done: match ? match.done : (t.done || false)
+                    done: t.done || false
                 };
             });
 
-            // ⭐ Filtra e Ordina - SOLO quelli con data valida e non scaduti
+            // Recupera stato 'done' persistito
+            const localTasks = JSON.parse(localStorage.getItem('argo_tasks') || '[]');
+            formatted.forEach(t => {
+                const match = localTasks.find(l => l.text === t.text && l.subject === t.subject);
+                if (match) t.done = match.done;
+            });
+
+            // Filtra e Ordina
             state.tasks = formatted
                 .filter(t => t.hasValidDate && t.dateObj >= today)
                 .sort((a, b) => a.dateObj - b.dateObj);
@@ -828,17 +825,17 @@
 
         function logout() {
             if (confirm('Sei sicuro di voler disconnettere? Dovrai effettuare nuovamente il login.')) {
-            sessionManager.clear();
-            state.isLoggedIn = false;
+                sessionManager.clear();
+                state.isLoggedIn = false;
                 state.didup.connected = false;
-            state.user = { name: 'Andrea', class: '5B' };
-            state.tasks = [];
+                state.user = { name: 'Andrea', class: '5B' };
+                state.tasks = [];
                 state.voti = [];
                 state.promemoria = [];
                 state.isOffline = false;
                 state.lastSync = null;
-            state.view = 'login';
-            render();
+                state.view = 'login';
+                render();
                 console.log('✅ Logout completato');
             }
         }
@@ -1329,7 +1326,7 @@
                                     <i class="ph ph-clock" style="font-size: 14px;"></i>
                                     ${dateLabel}
                                     ${daysUntil !== null && daysUntil >= 0 ? `<span style="opacity: 0.7;">(${daysUntil === 0 ? 'oggi' : daysUntil === 1 ? 'domani' : `tra ${daysUntil} giorni`})</span>` : ''}
-                        </div>
+                                </div>
                             </div>
                             <button onclick="toggleTask('${t.id}')" style="background: none; border: none; color: ${t.done ? 'var(--green)' : 'var(--text-secondary)'}; font-size: 24px; cursor: pointer; padding: 8px;">
                                 <i class="${t.done ? 'ph-fill ph-check-circle' : 'ph ph-circle'}"></i>
@@ -1363,32 +1360,13 @@
         }
 
         function renderVoti() {
-            // ⭐ DEBUG: Log completo per capire cosa c'è
-            console.log("🎓 renderVoti chiamato - state.voti:", state.voti);
-            console.log("🎓 renderVoti chiamato - state.grades:", state.grades);
-            console.log("🎓 renderVoti chiamato - localStorage argo_voti:", localStorage.getItem('argo_voti'));
-            
-            // ⭐ Prova prima voti, poi grades
-            const votiData = (state.voti && state.voti.length > 0) ? state.voti : 
-                            ((state.grades && state.grades.length > 0) ? state.grades : []);
-            
-            console.log("🎓 votiData finale:", votiData);
-            
+            const votiData = state.voti.length > 0 ? state.voti : state.grades;
             if (votiData.length === 0) {
                 return `
                     <div style="text-align:center; padding: 40px; color: var(--text-secondary);">
                         <i class="ph ph-graduation-cap" style="font-size: 48px; opacity: 0.3; margin-bottom: 12px; display: block;"></i>
                         Nessun voto caricato<br>
                         <span style="font-size: 12px; margin-top: 8px; display: block;">I voti verranno caricati dopo la sincronizzazione con DidUP</span>
-                        <button onclick="performSync(); closeModal();" style="background:var(--blue); color:white; padding:10px 20px; border-radius:10px; border:none; margin-top:16px; cursor:pointer; font-weight:600;">
-                            <i class="ph ph-arrow-clockwise"></i> Sincronizza Ora
-                        </button>
-                        <div style="margin-top: 20px; padding: 12px; background: rgba(255,255,255,0.05); border-radius: 8px; font-size: 11px; text-align: left;">
-                            <strong>Debug Info:</strong><br>
-                            state.voti.length: ${state.voti?.length || 0}<br>
-                            state.grades.length: ${state.grades?.length || 0}<br>
-                            localStorage: ${localStorage.getItem('argo_voti') ? 'Presente' : 'Vuoto'}
-                        </div>
                     </div>`;
             }
 
@@ -1434,11 +1412,7 @@
         }
 
         function showBachecaModal() {
-            // ⭐ Prova prima promemoria, poi announcements
-            const dataBacheca = state.promemoria && state.promemoria.length > 0 ? state.promemoria : 
-                               (state.announcements && state.announcements.length > 0 ? state.announcements : []);
-            
-            console.log("📢 Rendering bacheca - state.promemoria:", state.promemoria?.length || 0, "state.announcements:", state.announcements?.length || 0);
+            const dataBacheca = state.promemoria.length > 0 ? state.promemoria : state.announcements;
 
             modalContainer.innerHTML = `
             <div class="modal-overlay" onclick="closeModal(event)">
@@ -1453,9 +1427,6 @@
                         <i class="ph ph-megaphone" style="font-size: 48px; opacity: 0.3; margin-bottom: 12px; display: block;"></i>
                         Nessun avviso in bacheca<br>
                         <span style="font-size: 12px; margin-top: 8px; display: block;">Gli avvisi verranno caricati dopo la sincronizzazione con DidUP</span>
-                        <button onclick="performSync(); closeModal();" style="background:var(--orange); color:black; padding:10px 20px; border-radius:10px; border:none; margin-top:16px; cursor:pointer; font-weight:600;">
-                            <i class="ph ph-arrow-clockwise"></i> Sincronizza Ora
-                        </button>
                     </div>` :
                     dataBacheca.map(item => {
                         const data = item.data || item.date || item.datGiorno || 'Data non disponibile';
@@ -1470,8 +1441,8 @@
                                         <i class="ph ph-bell" style="color: var(--orange); font-size: 18px;"></i>
                                         <div style="font-size:12px; color:var(--text-secondary); text-transform:uppercase; font-weight:700;">
                                             ${data} - ${autore}
+                                        </div>
                                     </div>
-                                </div>
                                     <div style="font-weight:600; font-size:16px; margin-bottom:8px; color: white;">${oggetto}</div>
                                     ${testo ? `<div style="font-size:14px; opacity:0.8; line-height:1.5; color: var(--text-secondary); margin-bottom: ${url ? '8px' : '0'}; white-space: pre-wrap;">${testo}</div>` : ''}
                                     ${url ? `<a href="${url}" target="_blank" style="color:var(--blue); font-size:12px; display:inline-flex; align-items:center; gap:4px; margin-top:8px; font-weight:600;">
@@ -1676,73 +1647,51 @@
                         student: data.student
                     });
                     
-                    // ⭐ CRITICO: Salva sessione con credenziali codificate (come nel codice vecchio che funzionava)
+                    state.didup.connected = true;
                     if (data.session) {
-                        data.session.storedUser = btoa(unescape(encodeURIComponent(user)));
-                        data.session.storedPass = btoa(unescape(encodeURIComponent(pass)));
+                        const encodedUser = btoa(unescape(encodeURIComponent(user)));
+                        const encodedPass = btoa(unescape(encodeURIComponent(pass)));
+
+                        data.session.storedUser = encodedUser;
+                        data.session.storedPass = encodedPass;
                         data.session.schoolCode = school;
                         sessionManager.save(data.session);
-                        console.log("💾 Sessione salvata con credenziali");
-                    } else {
-                        // ⭐ Se non c'è sessione dal backend, crea una con le credenziali
-                        sessionManager.save({
-                            schoolCode: school,
-                            storedUser: btoa(unescape(encodeURIComponent(user))),
-                            storedPass: btoa(unescape(encodeURIComponent(pass)))
-                        });
-                        console.log("💾 Sessione minima creata con credenziali");
+
+                        // ⭐ Set credentials for new performSync
+                        localStorage.setItem('argo_school', school);
+                        localStorage.setItem('argo_user_cred', encodedUser);
+                        localStorage.setItem('argo_pass', encodedPass);
                     }
-                    
-                    // ⭐ Salva user
                     if (data.student) {
                         state.user = data.student;
-                        localStorage.setItem('argo_user', JSON.stringify(state.user));
-                        console.log("💾 User salvato:", state.user.name);
+                        localStorage.setItem('argo_user', JSON.stringify(state.user)); // ⭐ Salva user
                     }
                     
-                    // ⭐ Carica compiti con updateTasks per preservare date
+                    // ⭐ IMPORTANTE: Carica TUTTI i dati dal login, non solo i tasks
                     if (data.tasks && data.tasks.length > 0) {
                         updateTasks(data.tasks, false);
                         console.log("✅ Compiti caricati:", state.tasks.length);
                     }
                     
-                    // ⭐ CRITICO: Carica voti e salva SEMPRE
-                    console.log("🎓 LOGIN - Controllo voti in data:", data);
-                    console.log("🎓 LOGIN - data.voti:", data.voti);
-                    console.log("🎓 LOGIN - typeof data.voti:", typeof data.voti);
-                    console.log("🎓 LOGIN - Array.isArray(data.voti):", Array.isArray(data.voti));
-                    
-                    if (data.voti !== undefined) {
-                        state.voti = Array.isArray(data.voti) ? data.voti : [];
+                    // ⭐ Carica voti dal login
+                    if (data.voti && data.voti.length > 0) {
+                        state.voti = data.voti;
                         localStorage.setItem('argo_voti', JSON.stringify(state.voti));
-                        console.log("✅ Voti caricati e salvati:", state.voti.length);
-                        console.log("✅ Voti salvati - contenuto completo:", JSON.stringify(state.voti));
-                        if (state.voti.length === 0) {
-                            console.warn("⚠️ ATTENZIONE: Array voti vuoto - il backend NON sta recuperando i voti da DidUP");
-                        } else {
-                            console.log("✅ Primo voto esempio:", state.voti[0]);
-                        }
-                    } else {
-                        console.error("❌ ERRORE CRITICO: Campo 'voti' non presente nella risposta del login!");
-                        console.error("❌ Chiavi disponibili in data:", Object.keys(data));
-                        console.error("❌ Risposta completa:", data);
+                        console.log("✅ Voti caricati:", state.voti.length);
                     }
                     
-                    // ⭐ CRITICO: Carica promemoria e salva SEMPRE
-                    const promemoriaData = data.promemoria || data.announcements;
-                    if (promemoriaData !== undefined) {
-                        state.promemoria = Array.isArray(promemoriaData) ? promemoriaData : [];
+                    // ⭐ Carica promemoria dal login
+                    if (data.promemoria && data.promemoria.length > 0) {
+                        state.promemoria = data.promemoria;
                         localStorage.setItem('argo_promemoria', JSON.stringify(state.promemoria));
-                        console.log("✅ Promemoria caricati e salvati:", state.promemoria.length);
-                        if (state.promemoria.length === 0) {
-                            console.warn("⚠️ ATTENZIONE: Array promemoria vuoto - il backend NON sta recuperando i promemoria da DidUP");
-                        }
-                    } else {
-                        console.warn("⚠️ ATTENZIONE: Campo 'promemoria'/'announcements' non presente nella risposta del login");
+                        console.log("✅ Promemoria caricati:", state.promemoria.length);
+                    } else if (data.announcements && data.announcements.length > 0) {
+                        state.promemoria = data.announcements;
+                        localStorage.setItem('argo_promemoria', JSON.stringify(state.promemoria));
+                        console.log("✅ Promemoria caricati (announcements):", state.promemoria.length);
                     }
 
                     state.isLoggedIn = true;
-                    state.didup.connected = true;
                     state.isOffline = false;
                     state.lastSync = new Date().toLocaleTimeString();
                     updateOfflineBadge();
@@ -1845,7 +1794,7 @@
                 t.done = !t.done;
                 saveTasks();
                 if (state.reminders.find(x => x.id === id)) {
-                localStorage.setItem('argo_reminders', JSON.stringify(state.reminders));
+                    localStorage.setItem('argo_reminders', JSON.stringify(state.reminders));
                 }
                 render();
             }
@@ -1918,6 +1867,4 @@
     </script>
 </body>
 
-</html>
-
-</html>
+</html> 
