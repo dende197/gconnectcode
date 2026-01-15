@@ -455,53 +455,108 @@
         // ⭐ INITIALIZE APP ON LOAD
         document.addEventListener('DOMContentLoaded', async () => {
             console.log("🚀 App Loading...");
-            const isLoggedIn = sessionManager.isLoggedIn();
+            
+            // ⭐ Controlla se ci sono credenziali salvate (metodo più robusto)
             const savedSession = sessionManager.load();
-
-            if (isLoggedIn && savedSession) {
-                console.log("✅ Sessione valida trovata!");
+            const hasSchool = localStorage.getItem('argo_school');
+            const hasUserCred = localStorage.getItem('argo_user_cred');
+            const hasPass = localStorage.getItem('argo_pass');
+            const isLoggedInFlag = sessionManager.isLoggedIn();
+            
+            // ⭐ Considera loggato se c'è almeno una sessione O credenziali separate
+            const hasValidSession = (isLoggedInFlag && savedSession) || (hasSchool && hasUserCred && hasPass);
+            
+            if (hasValidSession) {
+                console.log("✅ Sessione/credenziali trovate - ripristino stato...");
+                
                 // ⭐ Carica tasks con done persistito
                 const cachedTasks = localStorage.getItem('argo_tasks');
                 if (cachedTasks) {
                     try {
-                        state.tasks = JSON.parse(cachedTasks); // ⭐ Mantiene done
-                        console.log("📦 Compiti caricati con stato done:", state.tasks.length);
+                        state.tasks = JSON.parse(cachedTasks);
+                        console.log("📦 Compiti caricati:", state.tasks.length);
                     } catch (e) {
                         console.error("Errore cache tasks:", e);
                         state.tasks = [];
                     }
                 }
+                
                 // ⭐ Carica user da localStorage
                 const cachedUser = localStorage.getItem('argo_user');
                 if (cachedUser) {
+                    try {
                     state.user = JSON.parse(cachedUser);
-                } else if (savedSession.student) {
+                        console.log("👤 Utente caricato:", state.user.name);
+                    } catch (e) {
+                        console.error("Errore caricamento user:", e);
+                    }
+                } else if (savedSession && savedSession.student) {
                     state.user = savedSession.student;
                     localStorage.setItem('argo_user', JSON.stringify(state.user));
                 }
-                state.isLoggedIn = true;
-                state.view = 'home';
 
-                // Restore other data
+                // ⭐ Restore voti e promemoria
                 const cachedVoti = localStorage.getItem('argo_voti');
-                if (cachedVoti) state.voti = JSON.parse(cachedVoti);
+                if (cachedVoti) {
+                    try {
+                        state.voti = JSON.parse(cachedVoti);
+                        console.log("📊 Voti caricati:", state.voti.length);
+                    } catch (e) {
+                        console.error("Errore caricamento voti:", e);
+                    }
+                }
+                
                 const cachedProm = localStorage.getItem('argo_promemoria');
-                if (cachedProm) state.promemoria = JSON.parse(cachedProm);
+                if (cachedProm) {
+                    try {
+                        state.promemoria = JSON.parse(cachedProm);
+                        console.log("📢 Promemoria caricati:", state.promemoria.length);
+                    } catch (e) {
+                        console.error("Errore caricamento promemoria:", e);
+                    }
+                }
 
                 const cachedGrades = localStorage.getItem('argo_grades');
-                if (cachedGrades) state.grades = JSON.parse(cachedGrades);
+                if (cachedGrades) {
+                    try {
+                        state.grades = JSON.parse(cachedGrades);
+                    } catch (e) {
+                        console.error("Errore caricamento grades:", e);
+                    }
+                }
+                
                 const cachedAnn = localStorage.getItem('argo_announcements');
-                if (cachedAnn) state.announcements = JSON.parse(cachedAnn);
+                if (cachedAnn) {
+                    try {
+                        state.announcements = JSON.parse(cachedAnn);
+                    } catch (e) {
+                        console.error("Errore caricamento announcements:", e);
+                    }
+                }
+                
                 const cachedRem = localStorage.getItem('argo_reminders');
-                if (cachedRem) state.reminders = JSON.parse(cachedRem);
+                if (cachedRem) {
+                    try {
+                        state.reminders = JSON.parse(cachedRem);
+                    } catch (e) {
+                        console.error("Errore caricamento reminders:", e);
+                    }
+                }
+                
+                // ⭐ Imposta stato loggato
+                state.isLoggedIn = true;
+                state.didup.connected = hasValidSession; // Considera connesso se ci sono credenziali
+                state.view = 'home';
 
                 render();
 
-                // Sync in background
+                // ⭐ Sync in background (non blocca il rendering)
                 console.log("🔄 Sincronizzazione in background...");
-                await performSync(); // ⭐ performSync ora gestisce le credenziali internamente
+                performSync().catch(e => {
+                    console.error("Errore sync in background:", e);
+                });
             } else {
-                console.log("❌ No session - showing login");
+                console.log("❌ Nessuna sessione/credenziali - mostro login");
                 state.isLoggedIn = false;
                 state.view = 'login';
                 render();
@@ -825,17 +880,17 @@
 
         function logout() {
             if (confirm('Sei sicuro di voler disconnettere? Dovrai effettuare nuovamente il login.')) {
-                sessionManager.clear();
-                state.isLoggedIn = false;
+            sessionManager.clear();
+            state.isLoggedIn = false;
                 state.didup.connected = false;
-                state.user = { name: 'Andrea', class: '5B' };
-                state.tasks = [];
+            state.user = { name: 'Andrea', class: '5B' };
+            state.tasks = [];
                 state.voti = [];
                 state.promemoria = [];
                 state.isOffline = false;
                 state.lastSync = null;
-                state.view = 'login';
-                render();
+            state.view = 'login';
+            render();
                 console.log('✅ Logout completato');
             }
         }
@@ -1326,7 +1381,7 @@
                                     <i class="ph ph-clock" style="font-size: 14px;"></i>
                                     ${dateLabel}
                                     ${daysUntil !== null && daysUntil >= 0 ? `<span style="opacity: 0.7;">(${daysUntil === 0 ? 'oggi' : daysUntil === 1 ? 'domani' : `tra ${daysUntil} giorni`})</span>` : ''}
-                                </div>
+                        </div>
                             </div>
                             <button onclick="toggleTask('${t.id}')" style="background: none; border: none; color: ${t.done ? 'var(--green)' : 'var(--text-secondary)'}; font-size: 24px; cursor: pointer; padding: 8px;">
                                 <i class="${t.done ? 'ph-fill ph-check-circle' : 'ph ph-circle'}"></i>
@@ -1412,7 +1467,11 @@
         }
 
         function showBachecaModal() {
-            const dataBacheca = state.promemoria.length > 0 ? state.promemoria : state.announcements;
+            // ⭐ Prova prima promemoria, poi announcements
+            const dataBacheca = state.promemoria && state.promemoria.length > 0 ? state.promemoria : 
+                               (state.announcements && state.announcements.length > 0 ? state.announcements : []);
+            
+            console.log("📢 Rendering bacheca - state.promemoria:", state.promemoria?.length || 0, "state.announcements:", state.announcements?.length || 0);
 
             modalContainer.innerHTML = `
             <div class="modal-overlay" onclick="closeModal(event)">
@@ -1427,6 +1486,9 @@
                         <i class="ph ph-megaphone" style="font-size: 48px; opacity: 0.3; margin-bottom: 12px; display: block;"></i>
                         Nessun avviso in bacheca<br>
                         <span style="font-size: 12px; margin-top: 8px; display: block;">Gli avvisi verranno caricati dopo la sincronizzazione con DidUP</span>
+                        <button onclick="performSync(); closeModal();" style="background:var(--orange); color:black; padding:10px 20px; border-radius:10px; border:none; margin-top:16px; cursor:pointer; font-weight:600;">
+                            <i class="ph ph-arrow-clockwise"></i> Sincronizza Ora
+                        </button>
                     </div>` :
                     dataBacheca.map(item => {
                         const data = item.data || item.date || item.datGiorno || 'Data non disponibile';
@@ -1441,8 +1503,8 @@
                                         <i class="ph ph-bell" style="color: var(--orange); font-size: 18px;"></i>
                                         <div style="font-size:12px; color:var(--text-secondary); text-transform:uppercase; font-weight:700;">
                                             ${data} - ${autore}
-                                        </div>
                                     </div>
+                                </div>
                                     <div style="font-weight:600; font-size:16px; margin-bottom:8px; color: white;">${oggetto}</div>
                                     ${testo ? `<div style="font-size:14px; opacity:0.8; line-height:1.5; color: var(--text-secondary); margin-bottom: ${url ? '8px' : '0'}; white-space: pre-wrap;">${testo}</div>` : ''}
                                     ${url ? `<a href="${url}" target="_blank" style="color:var(--blue); font-size:12px; display:inline-flex; align-items:center; gap:4px; margin-top:8px; font-weight:600;">
@@ -1647,48 +1709,72 @@
                         student: data.student
                     });
                     
-                    state.didup.connected = true;
-                    if (data.session) {
+                    // ⭐ CRITICO: Salva SEMPRE le credenziali per persistenza
                         const encodedUser = btoa(unescape(encodeURIComponent(user)));
                         const encodedPass = btoa(unescape(encodeURIComponent(pass)));
 
+                    // ⭐ Salva credenziali separate (metodo principale)
+                    localStorage.setItem('argo_school', school);
+                    localStorage.setItem('argo_user_cred', encodedUser);
+                    localStorage.setItem('argo_pass', encodedPass);
+                    console.log("💾 Credenziali salvate per persistenza");
+                    
+                    // ⭐ Salva anche la sessione se disponibile
+                    if (data.session) {
                         data.session.storedUser = encodedUser;
                         data.session.storedPass = encodedPass;
                         data.session.schoolCode = school;
                         sessionManager.save(data.session);
-
-                        // ⭐ Set credentials for new performSync
-                        localStorage.setItem('argo_school', school);
-                        localStorage.setItem('argo_user_cred', encodedUser);
-                        localStorage.setItem('argo_pass', encodedPass);
+                        console.log("💾 Sessione salvata");
+                    } else {
+                        // ⭐ Se non c'è sessione, crea una minima per il flag
+                        sessionManager.save({
+                            schoolCode: school,
+                            storedUser: encodedUser,
+                            storedPass: encodedPass
+                        });
                     }
+                    
+                    state.didup.connected = true;
+                    
+                    // ⭐ Salva student/user
                     if (data.student) {
                         state.user = data.student;
-                        localStorage.setItem('argo_user', JSON.stringify(state.user)); // ⭐ Salva user
+                        localStorage.setItem('argo_user', JSON.stringify(state.user));
+                        console.log("💾 User salvato:", state.user.name);
                     }
                     
-                    // ⭐ IMPORTANTE: Carica TUTTI i dati dal login, non solo i tasks
-                    if (data.tasks && data.tasks.length > 0) {
+                    // ⭐ IMPORTANTE: Carica TUTTI i dati dal login
+                    if (data.tasks && Array.isArray(data.tasks)) {
                         updateTasks(data.tasks, false);
                         console.log("✅ Compiti caricati:", state.tasks.length);
+                    } else {
+                        console.warn("⚠️ Nessun compito nel login response");
                     }
                     
-                    // ⭐ Carica voti dal login
-                    if (data.voti && data.voti.length > 0) {
-                        state.voti = data.voti;
+                    // ⭐ Carica voti dal login (anche se array vuoto)
+                    if (data.voti !== undefined) {
+                        state.voti = Array.isArray(data.voti) ? data.voti : [];
                         localStorage.setItem('argo_voti', JSON.stringify(state.voti));
                         console.log("✅ Voti caricati:", state.voti.length);
+                        if (state.voti.length === 0) {
+                            console.warn("⚠️ Array voti vuoto - il backend potrebbe non recuperare i voti da DidUP");
+                        }
+                    } else {
+                        console.warn("⚠️ Campo 'voti' non presente nella risposta");
                     }
                     
-                    // ⭐ Carica promemoria dal login
-                    if (data.promemoria && data.promemoria.length > 0) {
-                        state.promemoria = data.promemoria;
+                    // ⭐ Carica promemoria dal login (anche se array vuoto)
+                    const promemoriaData = data.promemoria || data.announcements;
+                    if (promemoriaData !== undefined) {
+                        state.promemoria = Array.isArray(promemoriaData) ? promemoriaData : [];
                         localStorage.setItem('argo_promemoria', JSON.stringify(state.promemoria));
                         console.log("✅ Promemoria caricati:", state.promemoria.length);
-                    } else if (data.announcements && data.announcements.length > 0) {
-                        state.promemoria = data.announcements;
-                        localStorage.setItem('argo_promemoria', JSON.stringify(state.promemoria));
-                        console.log("✅ Promemoria caricati (announcements):", state.promemoria.length);
+                        if (state.promemoria.length === 0) {
+                            console.warn("⚠️ Array promemoria vuoto - il backend potrebbe non recuperare i promemoria da DidUP");
+                        }
+                    } else {
+                        console.warn("⚠️ Campo 'promemoria'/'announcements' non presente nella risposta");
                     }
 
                     state.isLoggedIn = true;
@@ -1794,7 +1880,7 @@
                 t.done = !t.done;
                 saveTasks();
                 if (state.reminders.find(x => x.id === id)) {
-                    localStorage.setItem('argo_reminders', JSON.stringify(state.reminders));
+                localStorage.setItem('argo_reminders', JSON.stringify(state.reminders));
                 }
                 render();
             }
@@ -1866,5 +1952,7 @@
         // Init - render will be called by DOMContentLoaded
     </script>
 </body>
+
+</html>
 
 </html>
