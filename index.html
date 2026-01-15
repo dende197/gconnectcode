@@ -461,11 +461,22 @@
             if (isLoggedIn && savedSession) {
                 console.log("✅ Sessione valida trovata!");
                 
-                // ⭐ Carica tasks con done persistito
+                // ⭐ Carica tasks con done persistito e ricostruisci dateObj
                 const cachedTasks = localStorage.getItem('argo_tasks');
                 if (cachedTasks) {
                     try {
-                        state.tasks = JSON.parse(cachedTasks);
+                        const parsed = JSON.parse(cachedTasks);
+                        // ⭐ Ricostruisci dateObj se mancante (quando viene caricato da localStorage)
+                        state.tasks = parsed.map(t => {
+                            if (t.due_date && !t.dateObj) {
+                                t.dateObj = new Date(t.due_date);
+                                t.hasValidDate = !isNaN(t.dateObj.getTime());
+                            } else if (t.dateObj && typeof t.dateObj === 'string') {
+                                t.dateObj = new Date(t.dateObj);
+                                t.hasValidDate = !isNaN(t.dateObj.getTime());
+                            }
+                            return t;
+                        });
                         console.log("📦 Compiti caricati:", state.tasks.length);
                     } catch (e) {
                         console.error("Errore cache tasks:", e);
@@ -574,7 +585,15 @@
                 
                 // ⭐ DEBUG: Mostra dettagli completi in console
                 if (data.tasks && data.tasks.length > 0) console.log("📋 Tasks ricevuti:", data.tasks);
-                if (data.voti && data.voti.length > 0) console.log("📋 Voti ricevuti:", data.voti);
+                
+                // ⭐ DEBUG CRITICO per voti
+                console.log("🎓 DEBUG VOTI - data.voti:", data.voti);
+                console.log("🎓 DEBUG VOTI - tipo:", typeof data.voti, "è array?", Array.isArray(data.voti));
+                if (data.voti) {
+                    console.log("🎓 DEBUG VOTI - lunghezza:", data.voti.length);
+                    console.log("🎓 DEBUG VOTI - primo elemento:", data.voti[0]);
+                }
+                
                 if (data.promemoria && data.promemoria.length > 0) console.log("📋 Promemoria ricevuti:", data.promemoria);
                 if (data.announcements && data.announcements.length > 0) console.log("📋 Announcements ricevuti:", data.announcements);
 
@@ -725,7 +744,17 @@
 
         function saveTasks() {
             try {
-                localStorage.setItem('argo_tasks', JSON.stringify(state.tasks));
+                // ⭐ Salva solo i dati serializzabili (non dateObj che è un oggetto Date)
+                const tasksToSave = state.tasks.map(t => ({
+                    id: t.id,
+                    text: t.text,
+                    subject: t.subject,
+                    due_date: t.due_date,
+                    display_date: t.display_date,
+                    hasValidDate: t.hasValidDate,
+                    done: t.done
+                }));
+                localStorage.setItem('argo_tasks', JSON.stringify(tasksToSave));
                 console.log("💾 Compiti salvati con stato done");
             } catch (e) {
                 console.error("❌ Errore salvataggio tasks:", e);
@@ -740,11 +769,20 @@
             const today = new Date();
             today.setHours(0, 0, 0, 0);
 
+            // ⭐ Recupera stato 'done' persistito PRIMA di formattare
+            const localTasks = JSON.parse(localStorage.getItem('argo_tasks') || '[]');
+
             const formatted = newTasks.map(t => {
                 // ⭐ Gerarchia Affidabilità Date: Consegna > Prova > Pubblicazione
                 let rawDate = t.datCompito || t.due_date || t.dataProva || t.datGiorno || t.date;
                 let dateObj = parseArgoDate(rawDate);
                 let isoDate = dateObj.toISOString().split('T')[0];
+
+                // ⭐ Cerca match per preservare done
+                const match = localTasks.find(l => 
+                    (l.id === t.id) || 
+                    (l.text === (t.text || t.desCompito) && l.subject === (t.subject || t.materia))
+                );
 
                 return {
                     id: t.id || Math.random().toString(36).substr(2, 9),
@@ -754,21 +792,27 @@
                     display_date: rawDate,
                     dateObj: dateObj,
                     hasValidDate: !isNaN(dateObj.getTime()) && dateObj.getTime() > 0,
-                    done: t.done || false
+                    done: match ? match.done : (t.done || false)
                 };
             });
 
-            // Recupera stato 'done' persistito
-            const localTasks = JSON.parse(localStorage.getItem('argo_tasks') || '[]');
-            formatted.forEach(t => {
-                const match = localTasks.find(l => l.text === t.text && l.subject === t.subject);
-                if (match) t.done = match.done;
-            });
-
-            // Filtra e Ordina
+            // ⭐ Filtra e Ordina - mantieni anche quelli senza data valida per debug
             state.tasks = formatted
-                .filter(t => t.hasValidDate && t.dateObj >= today)
-                .sort((a, b) => a.dateObj - b.dateObj);
+                .filter(t => {
+                    // Mantieni se ha data valida E non è passata, oppure se non ha data (per debug)
+                    if (!t.hasValidDate) {
+                        console.warn("⚠️ Task senza data valida:", t.text, "rawDate:", t.display_date);
+                        return true; // Mantieni per vedere cosa c'è
+                    }
+                    return t.dateObj >= today;
+                })
+                .sort((a, b) => {
+                    // Prima quelli con data valida, poi quelli senza
+                    if (!a.hasValidDate && !b.hasValidDate) return 0;
+                    if (!a.hasValidDate) return 1;
+                    if (!b.hasValidDate) return -1;
+                    return a.dateObj - b.dateObj;
+                });
 
             saveTasks();
             if (shouldRender) render();
@@ -1335,13 +1379,32 @@
         }
 
         function renderVoti() {
-            const votiData = state.voti.length > 0 ? state.voti : state.grades;
+            // ⭐ DEBUG: Log completo per capire cosa c'è
+            console.log("🎓 renderVoti chiamato - state.voti:", state.voti);
+            console.log("🎓 renderVoti chiamato - state.grades:", state.grades);
+            console.log("🎓 renderVoti chiamato - localStorage argo_voti:", localStorage.getItem('argo_voti'));
+            
+            // ⭐ Prova prima voti, poi grades
+            const votiData = (state.voti && state.voti.length > 0) ? state.voti : 
+                            ((state.grades && state.grades.length > 0) ? state.grades : []);
+            
+            console.log("🎓 votiData finale:", votiData);
+            
             if (votiData.length === 0) {
                 return `
                     <div style="text-align:center; padding: 40px; color: var(--text-secondary);">
                         <i class="ph ph-graduation-cap" style="font-size: 48px; opacity: 0.3; margin-bottom: 12px; display: block;"></i>
                         Nessun voto caricato<br>
                         <span style="font-size: 12px; margin-top: 8px; display: block;">I voti verranno caricati dopo la sincronizzazione con DidUP</span>
+                        <button onclick="performSync(); closeModal();" style="background:var(--blue); color:white; padding:10px 20px; border-radius:10px; border:none; margin-top:16px; cursor:pointer; font-weight:600;">
+                            <i class="ph ph-arrow-clockwise"></i> Sincronizza Ora
+                        </button>
+                        <div style="margin-top: 20px; padding: 12px; background: rgba(255,255,255,0.05); border-radius: 8px; font-size: 11px; text-align: left;">
+                            <strong>Debug Info:</strong><br>
+                            state.voti.length: ${state.voti?.length || 0}<br>
+                            state.grades.length: ${state.grades?.length || 0}<br>
+                            localStorage: ${localStorage.getItem('argo_voti') ? 'Presente' : 'Vuoto'}
+                        </div>
                     </div>`;
             }
 
@@ -1661,15 +1724,25 @@
                     }
                     
                     // ⭐ CRITICO: Carica voti e salva SEMPRE
+                    console.log("🎓 LOGIN - Controllo voti in data:", data);
+                    console.log("🎓 LOGIN - data.voti:", data.voti);
+                    console.log("🎓 LOGIN - typeof data.voti:", typeof data.voti);
+                    console.log("🎓 LOGIN - Array.isArray(data.voti):", Array.isArray(data.voti));
+                    
                     if (data.voti !== undefined) {
                         state.voti = Array.isArray(data.voti) ? data.voti : [];
                         localStorage.setItem('argo_voti', JSON.stringify(state.voti));
                         console.log("✅ Voti caricati e salvati:", state.voti.length);
+                        console.log("✅ Voti salvati - contenuto completo:", JSON.stringify(state.voti));
                         if (state.voti.length === 0) {
                             console.warn("⚠️ ATTENZIONE: Array voti vuoto - il backend NON sta recuperando i voti da DidUP");
+                        } else {
+                            console.log("✅ Primo voto esempio:", state.voti[0]);
                         }
                     } else {
-                        console.warn("⚠️ ATTENZIONE: Campo 'voti' non presente nella risposta del login");
+                        console.error("❌ ERRORE CRITICO: Campo 'voti' non presente nella risposta del login!");
+                        console.error("❌ Chiavi disponibili in data:", Object.keys(data));
+                        console.error("❌ Risposta completa:", data);
                     }
                     
                     // ⭐ CRITICO: Carica promemoria e salva SEMPRE
