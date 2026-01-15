@@ -120,6 +120,15 @@
             }
         }
 
+        @keyframes spin {
+            from {
+                transform: rotate(0deg);
+            }
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
         h1 {
             font-size: 32px;
             font-weight: 700;
@@ -326,12 +335,12 @@
             if (!dateString) return new Date(0); // Fallback per date invalide
 
             // Try parsing as YYYY-MM-DD (e.g., from API or ISO)
-            if (dateString.match(/^\d{4}-\d{2}-\d{2}$/)) {
+            if (typeof dateString === 'string' && dateString.match(/^\d{4}-\d{2}-\d{2}$/)) {
                 return new Date(dateString + 'T00:00:00');
             }
 
             // Try parsing as DD/MM/YYYY (e.g., from Argo HTML)
-            if (dateString.match(/^\d{2}\/\d{2}\/\d{4}$/)) {
+            if (typeof dateString === 'string' && dateString.match(/^\d{2}\/\d{2}\/\d{4}$/)) {
                 const [day, month, year] = dateString.split('/');
                 return new Date(`${year}-${month}-${day}T00:00:00`);
             }
@@ -343,6 +352,19 @@
             } catch (e) { }
 
             return new Date();
+        }
+
+        // ⭐ Calcola la media matematica dai voti di Argo
+        function calcolaMedia(voti) {
+            if (!voti || voti.length === 0) return null;
+            const validi = voti.map(v => {
+                let s = (v.valore || v.value || "").toString().replace(',', '.');
+                return parseFloat(s);
+            }).filter(n => !isNaN(n));
+
+            if (validi.length === 0) return null;
+            const somma = validi.reduce((a, b) => a + b, 0);
+            return (somma / validi.length).toFixed(2);
         }
 
         const DIRECTORY = [
@@ -477,7 +499,7 @@
 
                 // Sync in background
                 console.log("🔄 Sincronizzazione in background...");
-                await performSync(savedSession); // ⭐ Await per completamento
+                await performSync(); // ⭐ performSync ora gestisce le credenziali internamente
             } else {
                 console.log("❌ No session - showing login");
                 state.isLoggedIn = false;
@@ -500,37 +522,161 @@
             render();
 
             try {
+                // ⭐ Prova prima con le credenziali separate
+                const schoolCode = localStorage.getItem('argo_school');
+                const storedUser = localStorage.getItem('argo_user_cred');
+                const storedPass = localStorage.getItem('argo_pass');
+                
+                // ⭐ Fallback: se non ci sono credenziali separate, usa la sessione salvata
+                const savedSession = sessionManager.load();
+                
+                let requestBody;
+                if (schoolCode && storedUser && storedPass) {
+                    // Usa credenziali separate (metodo nuovo)
+                    requestBody = {
+                        schoolCode: schoolCode,
+                        storedUser: storedUser,
+                        storedPass: storedPass
+                    };
+                    console.log("🔄 Sync con credenziali separate");
+                } else if (savedSession) {
+                    // Usa sessione completa (metodo vecchio)
+                    requestBody = savedSession;
+                    console.log("🔄 Sync con sessione salvata");
+                } else {
+                    throw new Error("Nessuna credenziale disponibile. Effettua il login.");
+                }
+
+                console.log("📤 Invio richiesta sync a:", `${API_BASE_URL}/sync`);
+                
                 const response = await fetch(`${API_BASE_URL}/sync`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        schoolCode: localStorage.getItem('argo_school'),
-                        storedUser: localStorage.getItem('argo_user_cred'),
-                        storedPass: localStorage.getItem('argo_pass')
-                    })
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify(requestBody)
                 });
 
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`HTTP ${response.status}: ${errorText}`);
+                }
+
                 const data = await response.json();
-                console.log("Dati ricevuti:", data); // Controlla qui in console!
+                console.log("📥 Dati ricevuti dal server:", {
+                    success: data.success,
+                    tasksCount: data.tasks?.length || 0,
+                    votiCount: data.voti?.length || 0,
+                    promemoriaCount: data.promemoria?.length || data.announcements?.length || 0,
+                    error: data.error,
+                    rawData: data
+                });
+                
+                // ⭐ DEBUG: Mostra dettagli completi in console
+                if (data.tasks) console.log("📋 Tasks ricevuti:", data.tasks);
+                if (data.voti) console.log("📋 Voti ricevuti:", data.voti);
+                if (data.promemoria) console.log("📋 Promemoria ricevuti:", data.promemoria);
+                if (data.announcements) console.log("📋 Announcements ricevuti:", data.announcements);
 
                 if (data.success) {
                     // Aggiorna i compiti
-                    if (data.tasks) updateTasks(data.tasks);
+                    if (data.tasks && Array.isArray(data.tasks) && data.tasks.length > 0) {
+                        updateTasks(data.tasks);
+                        console.log("✅ Compiti aggiornati:", state.tasks.length);
+                    } else {
+                        console.warn("⚠️ Nessun compito ricevuto o array vuoto");
+                    }
 
-                    // Aggiorna i voti
-                    state.voti = data.voti || [];
+                    // Aggiorna i voti e salva in localStorage
+                    if (data.voti && Array.isArray(data.voti)) {
+                        state.voti = data.voti;
+                        try {
+                            localStorage.setItem('argo_voti', JSON.stringify(state.voti));
+                            console.log("💾 Voti salvati:", state.voti.length);
+                            if (state.voti.length === 0) {
+                                console.warn("⚠️ Array voti vuoto - il backend potrebbe non recuperare i voti da DidUP");
+                            }
+                        } catch (e) {
+                            console.error("❌ Errore salvataggio voti:", e);
+                        }
+                    } else {
+                        console.warn("⚠️ Nessun voto ricevuto o formato non valido");
+                    }
 
-                    // Aggiorna la bacheca (promemoria)
-                    state.promemoria = data.promemoria || data.announcements || [];
+                    // Aggiorna la bacheca (promemoria) e salva in localStorage
+                    const promemoriaData = data.promemoria || data.announcements || [];
+                    if (Array.isArray(promemoriaData)) {
+                        state.promemoria = promemoriaData;
+                        if (state.promemoria.length > 0) {
+                            try {
+                                localStorage.setItem('argo_promemoria', JSON.stringify(state.promemoria));
+                                console.log("💾 Promemoria salvati:", state.promemoria.length);
+                            } catch (e) {
+                                console.error("❌ Errore salvataggio promemoria:", e);
+                            }
+                        } else {
+                            console.warn("⚠️ Array promemoria vuoto - il backend potrebbe non recuperare i promemoria da DidUP");
+                        }
+                    } else {
+                        console.warn("⚠️ Nessun promemoria ricevuto o formato non valido");
+                    }
 
                     state.lastSync = new Date().toLocaleTimeString();
                     state.isOffline = false;
+                    state.didup.connected = true;
+                    console.log("✅ Sync completato:", {
+                        tasks: state.tasks.length,
+                        voti: state.voti.length,
+                        promemoria: state.promemoria.length
+                    });
                 } else {
                     state.isOffline = true;
+                    const errorMsg = data.error || "Errore sconosciuto";
+                    console.warn("⚠️ Sync fallito:", errorMsg);
+                    
+                    // Se la sessione è scaduta, chiedi di rifare login
+                    if (errorMsg.includes('sessione') || errorMsg.includes('scaduta') || errorMsg.includes('expired') || errorMsg.includes('invalid') || errorMsg.includes('login')) {
+                        if (confirm("⚠️ La sessione è scaduta. Vuoi effettuare nuovamente il login?")) {
+                            sessionManager.clear();
+                            state.isLoggedIn = false;
+                            state.view = 'login';
+                            render();
+                            openArgoLogin();
+                        }
+                        return;
+                    }
                 }
             } catch (e) {
-                console.error("Errore sync:", e);
+                console.error("❌ Errore sync:", e);
                 state.isOffline = true;
+                
+                // Mostra messaggio all'utente se è un errore di rete
+                if (e.name === 'TypeError' && e.message.includes('fetch')) {
+                    console.warn("⚠️ Errore di connessione - usando dati cached");
+                    // Carica dati cached se disponibili
+                    const cachedVoti = localStorage.getItem('argo_voti');
+                    if (cachedVoti) {
+                        try {
+                            state.voti = JSON.parse(cachedVoti);
+                            console.log("📦 Voti caricati da cache:", state.voti.length);
+                        } catch (err) {
+                            console.error("Errore parsing voti cached:", err);
+                        }
+                    }
+                    const cachedProm = localStorage.getItem('argo_promemoria');
+                    if (cachedProm) {
+                        try {
+                            state.promemoria = JSON.parse(cachedProm);
+                            console.log("📦 Promemoria caricati da cache:", state.promemoria.length);
+                        } catch (err) {
+                            console.error("Errore parsing promemoria cached:", err);
+                        }
+                    }
+                    alert("⚠️ Errore di connessione al server. Verifica la connessione internet.");
+                } else {
+                    alert("❌ Errore durante la sincronizzazione: " + e.message);
+                }
             } finally {
                 state.syncing = false;
                 updateOfflineBadge();
@@ -547,14 +693,26 @@
 
                 const response = await fetch(`${API_BASE_URL}/login`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
                     body: JSON.stringify({ schoolCode: school, username: user, password: pass })
                 });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
 
                 const data = await response.json();
 
                 if (data.success) {
                     console.log("✅ Silent Login riuscito!");
+                    console.log("📥 Dati ricevuti:", {
+                        tasks: data.tasks?.length || 0,
+                        voti: data.voti?.length || 0,
+                        promemoria: data.promemoria?.length || 0
+                    });
 
                     const newSession = {
                         ...data.session,
@@ -564,14 +722,24 @@
                     };
                     sessionManager.save(newSession);
 
-                    if (data.tasks) updateTasks(data.tasks, true);
+                    // ⭐ Carica TUTTI i dati, non solo tasks
+                    if (data.tasks) updateTasks(data.tasks, false);
+                    if (data.voti) {
+                        state.voti = data.voti;
+                        localStorage.setItem('argo_voti', JSON.stringify(state.voti));
+                    }
+                    if (data.promemoria) {
+                        state.promemoria = data.promemoria;
+                        localStorage.setItem('argo_promemoria', JSON.stringify(state.promemoria));
+                    }
                     if (data.student) state.user = data.student;
 
                     state.isOffline = false;
+                    state.lastSync = new Date().toLocaleTimeString();
                     updateOfflineBadge();
                     render();
                 } else {
-                    throw new Error("Silent login fallito");
+                    throw new Error(data.error || "Silent login fallito");
                 }
             } catch (e) {
                 console.error("❌ Silent login errore:", e);
@@ -598,40 +766,34 @@
             today.setHours(0, 0, 0, 0);
 
             const formatted = newTasks.map(t => {
-                // Prendi la data grezza
-                let rawDate = t.due_date || t.datCompito || t.date;
-                // Convertila in oggetto Date sicuro
+                // ⭐ Gerarchia Affidabilità Date: Consegna > Prova > Pubblicazione
+                let rawDate = t.datCompito || t.due_date || t.dataProva || t.datGiorno || t.date;
                 let dateObj = parseArgoDate(rawDate);
-
-                // Crea una stringa YYYY-MM-DD per il calendario
                 let isoDate = dateObj.toISOString().split('T')[0];
 
                 return {
                     id: t.id || Math.random().toString(36).substr(2, 9),
-                    text: t.text || t.desCompito,
-                    subject: t.subject || t.materia || 'Compito',
-                    due_date: isoDate, // Formato per FullCalendar
-                    display_date: rawDate, // Formato originale per UI
+                    text: t.text || t.desCompito || "Nessuna descrizione",
+                    subject: t.subject || t.materia || 'Generico',
+                    due_date: isoDate,
+                    display_date: rawDate,
                     dateObj: dateObj,
-                    done: false
+                    hasValidDate: !isNaN(dateObj.getTime()) && dateObj.getTime() > 0,
+                    done: t.done || false
                 };
             });
 
-            // Filtra: Mostra solo scadenze future o di oggi
-            state.tasks = formatted.filter(t => t.dateObj >= today);
-            state.tasks.sort((a, b) => a.dateObj - b.dateObj);
+            // Recupera stato 'done' persistito
+            const localTasks = JSON.parse(localStorage.getItem('argo_tasks') || '[]');
+            formatted.forEach(t => {
+                const match = localTasks.find(l => l.text === t.text && l.subject === t.subject);
+                if (match) t.done = match.done;
+            });
 
-            // ⭐ MERGE WITH LOCAL STATUS (Keep "done" states)
-            const savedTasks = localStorage.getItem('argo_tasks');
-            if (savedTasks) {
-                try {
-                    const locals = JSON.parse(savedTasks);
-                    state.tasks.forEach(remote => {
-                        const local = locals.find(l => l.text === remote.text);
-                        if (local) remote.done = local.done;
-                    });
-                } catch (e) { console.error("Errore parsing tasks salvati:", e); }
-            }
+            // Filtra e Ordina
+            state.tasks = formatted
+                .filter(t => t.hasValidDate && t.dateObj >= today)
+                .sort((a, b) => a.dateObj - b.dateObj);
 
             saveTasks();
             if (shouldRender) render();
@@ -662,22 +824,41 @@
         function navigate(v) { state.view = v; render(); }
 
         function logout() {
-            sessionManager.clear();
-            state.isLoggedIn = false;
-            state.didup.connected = false; // ⭐ Resetta connessione
-            state.user = { name: 'Andrea', class: '5B' };
-            state.tasks = [];
-            state.view = 'login';
-            render();
-            alert('✅ Disconnesso correttamente');
+            if (confirm('Sei sicuro di voler disconnettere? Dovrai effettuare nuovamente il login.')) {
+                sessionManager.clear();
+                state.isLoggedIn = false;
+                state.didup.connected = false;
+                state.user = { name: 'Andrea', class: '5B' };
+                state.tasks = [];
+                state.voti = [];
+                state.promemoria = [];
+                state.isOffline = false;
+                state.lastSync = null;
+                state.view = 'login';
+                render();
+                console.log('✅ Logout completato');
+            }
         }
 
         function renderLogin() {
+            // Se c'è una sessione salvata ma l'utente vuole rifare login, mostra il form
+            const savedSession = sessionManager.load();
+            const hasSession = savedSession && sessionManager.isLoggedIn();
+            
             return `
-            <div class="view" style="height: 100vh; display:flex; flex-direction:column; justify-content:center; align-items:center;">
+            <div class="view" style="height: 100vh; display:flex; flex-direction:column; justify-content:center; align-items:center; padding: 24px;">
                 <h1 style="margin-bottom:40px;">📚 G-Connect</h1>
-                <p style="color:var(--text-secondary); margin-bottom:30px;">Accedi con le tue credenziali Argo</p>
-                <button class="btn-primary" onclick="openArgoLogin()" style="max-width:300px;">Accedi</button>
+                <p style="color:var(--text-secondary); margin-bottom:30px; text-align:center;">Accedi con le tue credenziali DidUP</p>
+                <button class="btn-primary" onclick="openArgoLogin()" style="max-width:300px; cursor:pointer;">Accedi</button>
+                ${hasSession ? `
+                    <div style="margin-top:30px; padding:16px; background:rgba(255,255,255,0.05); border-radius:12px; text-align:center; max-width:300px;">
+                        <div style="font-size:12px; color:var(--text-secondary); margin-bottom:8px;">Sessione attiva trovata</div>
+                        <div style="font-size:14px; font-weight:600; margin-bottom:12px;">${state.user?.name || 'Utente'}</div>
+                        <button onclick="logout()" style="background:none; border:1px solid rgba(255,255,255,0.2); color:var(--text-secondary); padding:8px 16px; border-radius:8px; cursor:pointer; font-size:12px; width:100%;">
+                            Disconnetti e accedi con altro account
+                        </button>
+                    </div>
+                ` : ''}
             </div>`;
         }
 
@@ -687,17 +868,30 @@
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
                         <div>
                             <div style="font-size: 14px; color: var(--text-secondary); font-weight: 600; letter-spacing: 1px;">BENTORNATO</div>
-                            <h1>${state.user.name}</h1>
+                            <h1>${state.user.name || 'Utente'}</h1>
                         </div>
                         <div style="display: flex; gap: 12px;">
                             <div onclick="navigate('search')" style="width: 44px; height: 44px; background: rgba(255,255,255,0.1); border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor:pointer;">
                                 <i class="ph-fill ph-users" style="font-size: 20px;"></i>
                             </div>
-                            <div onclick="alert('Nessuna nuova notifica')" style="width: 44px; height: 44px; background: rgba(255,255,255,0.1); border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor:pointer;">
-                                <i class="ph-fill ph-bell" style="font-size: 20px;"></i>
+                            <div onclick="openArgoLogin()" style="width: 44px; height: 44px; background: rgba(255,255,255,0.1); border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor:pointer;" title="Riconnetti DidUP">
+                                <i class="ph-fill ph-arrow-clockwise" style="font-size: 20px;"></i>
                             </div>
                         </div>
                     </div>
+                    
+                    ${!state.didup.connected ? `
+                        <div class="card" style="background: rgba(255, 159, 10, 0.1); border: 1px solid var(--orange); margin-bottom: 20px; padding: 16px; display: flex; align-items: center; gap: 12px;">
+                            <i class="ph ph-warning" style="color: var(--orange); font-size: 24px;"></i>
+                            <div style="flex: 1;">
+                                <div style="font-weight: 600; margin-bottom: 4px;">DidUP Non Connesso</div>
+                                <div style="font-size: 12px; color: var(--text-secondary);">Collega il tuo account DidUP per vedere voti, compiti e promemoria</div>
+                            </div>
+                            <button onclick="openArgoLogin()" style="background: var(--orange); color: black; padding: 8px 16px; border-radius: 8px; border: none; font-weight: 600; font-size: 12px; cursor: pointer;">
+                                Connetti
+                            </button>
+                        </div>
+                    ` : ''}
 
                     <!-- CIRCULARS -->
                     <div style="margin-bottom: 30px;">
@@ -727,13 +921,20 @@
                     <div style="display: flex; gap: 16px; margin-bottom: 30px;">
                         
                         <!-- GRADE AVERAGE WIDGET -->
-                        <div class="card" onclick="alert('Dettaglio Voti')" style="flex: 1; padding: 20px; display: flex; flex-direction: column; align-items: center; justify-content: center; margin-bottom: 0; cursor:pointer;">
+                        <div class="card" onclick="showVotiView()" style="flex: 1; padding: 20px; display: flex; flex-direction: column; align-items: center; justify-content: center; margin-bottom: 0; cursor:pointer;">
                             <div style="position: relative; width: 80px; height: 80px; display: flex; align-items: center; justify-content: center; margin-bottom: 12px;">
-                                <svg width="80" height="80" viewBox="0 0 80 80">
-                                    <circle cx="40" cy="40" r="34" fill="none" stroke="#333" stroke-width="6" />
-                                    <circle cx="40" cy="40" r="34" fill="none" stroke="#28cd41" stroke-width="6" stroke-dasharray="213" stroke-dashoffset="40" transform="rotate(-90 40 40)" stroke-linecap="round" />
-                                </svg>
-                                <span style="position: absolute; font-size: 20px; font-weight: 700; color: white;">7.8</span>
+                                ${(() => {
+                    const media = calcolaMedia(state.voti);
+                    const percent = media ? (parseFloat(media) / 10 * 213) : 0;
+                    const color = parseFloat(media) >= 6 ? 'var(--green)' : 'var(--red)';
+                    return `
+                                        <svg width="80" height="80" viewBox="0 0 80 80">
+                                            <circle cx="40" cy="40" r="34" fill="none" stroke="#333" stroke-width="6" />
+                                            <circle cx="40" cy="40" r="34" fill="none" stroke="${color}" stroke-width="6" stroke-dasharray="213" stroke-dashoffset="${213 - percent}" transform="rotate(-90 40 40)" stroke-linecap="round" />
+                                        </svg>
+                                        <span style="position: absolute; font-size: 20px; font-weight: 700; color: white;">${media || '--'}</span>
+                                    `;
+                })()}
                             </div>
                             <span style="font-size: 14px; color: var(--text-secondary); font-weight: 600;">Media Voti</span>
                         </div>
@@ -980,29 +1181,93 @@
         function renderPlanner() {
             setTimeout(() => {
                 const calendarEl = document.getElementById('calendar');
-                if (calendarEl && !calendarEl.innerHTML.trim().length) {
+                if (calendarEl) {
+                    // Rimuovi il calendario esistente se presente
+                    const existingCalendar = calendarEl._fullCalendar;
+                    if (existingCalendar) {
+                        existingCalendar.destroy();
+                    }
+                    
                     const calendar = new FullCalendar.Calendar(calendarEl, {
                         initialView: 'dayGridMonth',
                         locale: 'it',
                         themeSystem: 'standard',
                         height: 'auto',
                         headerToolbar: { left: 'title', center: '', right: 'prev,next' },
-                        events: state.tasks.map(t => ({
-                            title: t.text,
-                            start: t.due_date || t.date,
-                            color: t.done ? '#30D158' : '#0A84FF'
-                        })),
+                        events: state.tasks
+                            .filter(t => t.due_date && t.hasValidDate)
+                            .map(t => ({
+                                title: `${t.subject}: ${t.text.substring(0, 30)}${t.text.length > 30 ? '...' : ''}`,
+                                start: t.due_date,
+                                color: t.done ? '#30D158' : '#0A84FF',
+                                textColor: t.done ? '#000' : '#fff',
+                                extendedProps: {
+                                    fullText: t.text,
+                                    subject: t.subject
+                                }
+                            })),
+                        eventClick: function(info) {
+                            const event = info.event;
+                            modalContainer.innerHTML = `
+                                <div class="modal-overlay" onclick="closeModal(event)">
+                                    <div class="modal-content">
+                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                                            <h2 style="margin: 0;">Dettaglio Compito</h2>
+                                            <button onclick="closeModal()" style="background: none; border: none; color: var(--blue); font-weight: 700; font-size: 16px; cursor: pointer;">Chiudi</button>
+                                        </div>
+                                        <div style="margin-bottom: 12px;">
+                                            <div style="font-size: 12px; color: var(--text-secondary); font-weight: 700; text-transform: uppercase; margin-bottom: 4px;">Materia</div>
+                                            <div style="font-size: 18px; font-weight: 600; color: white;">${event.extendedProps.subject}</div>
+                                        </div>
+                                        <div style="margin-bottom: 12px;">
+                                            <div style="font-size: 12px; color: var(--text-secondary); font-weight: 700; text-transform: uppercase; margin-bottom: 4px;">Descrizione</div>
+                                            <div style="font-size: 16px; color: white; line-height: 1.5;">${event.extendedProps.fullText}</div>
+                                        </div>
+                                        <div>
+                                            <div style="font-size: 12px; color: var(--text-secondary); font-weight: 700; text-transform: uppercase; margin-bottom: 4px;">Scadenza</div>
+                                            <div style="font-size: 16px; color: white; display: flex; align-items: center; gap: 6px;">
+                                                <i class="ph ph-calendar"></i>
+                                                ${new Date(event.start).toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            `;
+                        },
                         dateClick: function (info) {
-                            alert("Giorno selezionato: " + info.dateStr);
+                            const tasksForDay = state.tasks.filter(t => {
+                                if (!t.due_date) return false;
+                                const taskDate = new Date(t.due_date);
+                                const clickedDate = new Date(info.dateStr);
+                                return taskDate.toDateString() === clickedDate.toDateString();
+                            });
+                            
+                            if (tasksForDay.length > 0) {
+                                const tasksList = tasksForDay.map(t => `• ${t.subject}: ${t.text}`).join('\\n');
+                                alert(`Compiti per ${info.dateStr}:\\n\\n${tasksList}`);
+                            } else {
+                                alert(`Nessun compito per ${info.dateStr}`);
+                            }
                         }
                     });
                     calendar.render();
+                    calendarEl._fullCalendar = calendar;
                 }
             }, 100);
 
             return `
             <div class="view" style="padding: 20px; padding-bottom: 100px;">
-                <h1>Planner</h1>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
+                    <h1 style="margin: 0;">Planner</h1>
+                    <button onclick="performSync()" style="background: var(--blue); color: white; border: none; padding: 10px 16px; border-radius: 12px; font-weight: 600; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 6px;">
+                        <i class="ph ph-arrow-clockwise" style="font-size: 16px; ${state.syncing ? 'animation: spin 1s linear infinite;' : ''}"></i>
+                        ${state.syncing ? 'Sincronizzazione...' : 'Sincronizza'}
+                    </button>
+                </div>
+                ${state.lastSync ? `<div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 16px; display: flex; align-items: center; gap: 6px;">
+                    <i class="ph ph-check-circle" style="color: var(--green);"></i>
+                    Ultima sincronizzazione: ${state.lastSync}
+                </div>` : ''}
                 
                 <div style="background: #1C1C1E; border-radius: 20px; padding: 15px; margin-bottom: 20px; border: 1px solid #2C2C2E;">
                     <div id="calendar"></div>
@@ -1023,15 +1288,53 @@
 
                 <h3>Scadenze</h3>
                 <div id="tasks-list">
-                    ${state.tasks.map(t => `
-                        <div class="card" style="display:flex; align-items:center; gap:15px; background: rgba(255,255,255,0.03);">
-                            <div style="flex:1;">
-                                <div style="font-size:11px; color:var(--blue); font-weight:700;">${t.subject}</div>
-                                <div style="color: white; margin-top: 4px;">${t.text}</div>
+                    ${state.tasks.map(t => {
+                        const dueDate = t.dateObj && !isNaN(t.dateObj.getTime()) ? t.dateObj : null;
+                        const today = new Date();
+                        today.setHours(0, 0, 0, 0);
+                        const daysUntil = dueDate ? Math.ceil((dueDate - today) / (1000 * 60 * 60 * 24)) : null;
+                        let dateLabel = '';
+                        let dateColor = 'var(--text-secondary)';
+                        
+                        if (dueDate) {
+                            if (daysUntil === 0) {
+                                dateLabel = 'OGGI';
+                                dateColor = 'var(--red)';
+                            } else if (daysUntil === 1) {
+                                dateLabel = 'DOMANI';
+                                dateColor = 'var(--orange)';
+                            } else if (daysUntil < 0) {
+                                dateLabel = 'SCADUTO';
+                                dateColor = 'var(--red)';
+                            } else {
+                                dateLabel = dueDate.toLocaleDateString('it-IT', { day: 'numeric', month: 'short' });
+                                dateColor = daysUntil <= 3 ? 'var(--orange)' : 'var(--blue)';
+                            }
+                        } else {
+                            dateLabel = t.display_date || 'Data non disponibile';
+                        }
+                        
+                        return `
+                        <div class="card" style="display:flex; align-items:center; gap:15px; background: rgba(255,255,255,0.03); border-left: 3px solid ${t.done ? 'var(--green)' : dateColor};">
+                            <div style="width: 40px; height: 40px; border-radius: 10px; background: ${t.done ? 'rgba(48, 209, 88, 0.2)' : 'rgba(10, 132, 255, 0.2)'}; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                                ${t.done ? '<i class="ph-fill ph-check" style="color: var(--green); font-size: 20px;"></i>' : '<i class="ph ph-calendar" style="color: var(--blue); font-size: 18px;"></i>'}
                             </div>
+                            <div style="flex:1; min-width: 0;">
+                                <div style="font-size:11px; color:var(--blue); font-weight:700; margin-bottom: 4px;">${t.subject}</div>
+                                <div style="color: white; margin-top: 4px; font-size: 15px; font-weight: 500; ${t.done ? 'opacity: 0.5; text-decoration: line-through;' : ''}">${t.text}</div>
+                                <div style="font-size: 12px; color: ${dateColor}; font-weight: 600; margin-top: 6px; display: flex; align-items: center; gap: 6px;">
+                                    <i class="ph ph-clock" style="font-size: 14px;"></i>
+                                    ${dateLabel}
+                                    ${daysUntil !== null && daysUntil >= 0 ? `<span style="opacity: 0.7;">(${daysUntil === 0 ? 'oggi' : daysUntil === 1 ? 'domani' : `tra ${daysUntil} giorni`})</span>` : ''}
+                                </div>
+                            </div>
+                            <button onclick="toggleTask('${t.id}')" style="background: none; border: none; color: ${t.done ? 'var(--green)' : 'var(--text-secondary)'}; font-size: 24px; cursor: pointer; padding: 8px;">
+                                <i class="${t.done ? 'ph-fill ph-check-circle' : 'ph ph-circle'}"></i>
+                            </button>
                         </div>
-                    `).join('')}
-                    ${state.tasks.length === 0 ? '<div style="text-align:center; padding: 20px; opacity: 0.5;">Finito tutto! 🎉</div>' : ''}
+                    `;
+                    }).join('')}
+                    ${state.tasks.length === 0 ? '<div style="text-align:center; padding: 40px; opacity: 0.5;"><i class="ph ph-check-circle" style="font-size: 48px; color: var(--green); margin-bottom: 12px; display: block;"></i>Finito tutto! 🎉<br><span style="font-size: 12px; color: var(--text-secondary);">Non hai compiti in scadenza</span></div>' : ''}
                 </div>
             </div>`;
         }
@@ -1059,26 +1362,47 @@
         function renderVoti() {
             const votiData = state.voti.length > 0 ? state.voti : state.grades;
             if (votiData.length === 0) {
-                return `<div style="text-align:center; padding: 40px; color: var(--text-secondary);">Nessun voto caricato</div>`;
+                return `
+                    <div style="text-align:center; padding: 40px; color: var(--text-secondary);">
+                        <i class="ph ph-graduation-cap" style="font-size: 48px; opacity: 0.3; margin-bottom: 12px; display: block;"></i>
+                        Nessun voto caricato<br>
+                        <span style="font-size: 12px; margin-top: 8px; display: block;">I voti verranno caricati dopo la sincronizzazione con DidUP</span>
+                    </div>`;
             }
 
+            const media = calcolaMedia(votiData);
+            const mediaNum = media ? parseFloat(media) : null;
+
             return `
+                <div style="margin-bottom: 20px;">
+                    <div class="card" style="background: linear-gradient(135deg, rgba(10, 132, 255, 0.2), rgba(94, 92, 230, 0.2)); border: 1px solid var(--blue); padding: 20px; text-align: center; margin-bottom: 16px;">
+                        <div style="font-size: 12px; color: var(--text-secondary); font-weight: 700; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">Media Generale</div>
+                        <div style="font-size: 48px; font-weight: 800; color: white; margin-bottom: 4px;">${media || '--'}</div>
+                        <div style="font-size: 14px; color: var(--text-secondary);">Su ${votiData.length} voti registrati</div>
+                    </div>
+                </div>
                 <div style="display: flex; flex-direction: column; gap: 12px;">
                     ${votiData.map(v => {
-                const val = v.valore || v.value;
-                const mat = v.materia || v.subject;
-                const data = v.data || v.date;
-                const isSufficient = parseFloat(val.replace(',', '.')) >= 6;
-                const color = isSufficient ? 'var(--blue)' : '#FF453A';
+                const val = (v.valore || v.value || '').toString();
+                const mat = v.materia || v.subject || 'Materia non specificata';
+                const data = v.data || v.date || 'Data non disponibile';
+                const tipo = v.tipo || v.type || '';
+                const valNum = parseFloat(val.replace(',', '.'));
+                const isSufficient = !isNaN(valNum) && valNum >= 6;
+                const color = isSufficient ? 'var(--green)' : '#FF453A';
 
                 return `
-                            <div class="card" style="margin-bottom: 0; padding: 16px; display: flex; align-items: center; gap: 16px; background: rgba(255,255,255,0.03);">
-                                <div style="width: 50px; height: 50px; border-radius: 12px; background: ${color}15; display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 800; color: ${color}; border: 1px solid ${color}30;">
+                            <div class="card" style="margin-bottom: 0; padding: 16px; display: flex; align-items: center; gap: 16px; background: rgba(255,255,255,0.03); border-left: 3px solid ${color};">
+                                <div style="width: 60px; height: 60px; border-radius: 12px; background: ${color}20; display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: 800; color: ${color}; border: 2px solid ${color}40; flex-shrink: 0;">
                                     ${val}
                                 </div>
-                                <div style="flex: 1;">
-                                    <div style="font-weight: 700; font-size: 16px; color: white;">${mat}</div>
-                                    <div style="font-size: 13px; color: var(--text-secondary);">${data}</div>
+                                <div style="flex: 1; min-width: 0;">
+                                    <div style="font-weight: 700; font-size: 16px; color: white; margin-bottom: 4px;">${mat}</div>
+                                    ${tipo ? `<div style="font-size: 11px; color: var(--text-secondary); text-transform: uppercase; font-weight: 600; margin-bottom: 2px;">${tipo}</div>` : ''}
+                                    <div style="font-size: 13px; color: var(--text-secondary); display: flex; align-items: center; gap: 6px;">
+                                        <i class="ph ph-calendar" style="font-size: 12px;"></i>
+                                        ${data}
+                                    </div>
                                 </div>
                             </div>
                         `;
@@ -1095,21 +1419,38 @@
                 <div class="modal-content" style="max-height:85vh; overflow-y:auto; padding: 0;">
                     <div style="position: sticky; top: 0; background:rgba(28,28,30,0.95); backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px); padding: 20px; border-bottom:1px solid rgba(255,255,255,0.1); display:flex; justify-content:space-between; align-items:center; z-index: 10;">
                         <h2 style="margin:0;">Bacheca & Avvisi</h2>
-                        <button onclick="closeModal()" style="background:none; border:none; color:var(--orange); font-weight:700; font-size:16px;">Chiudi</button>
+                        <button onclick="closeModal()" style="background:none; border:none; color:var(--orange); font-weight:700; font-size:16px; cursor:pointer;">Chiudi</button>
                     </div>
                     <div style="padding: 20px; display:flex; flex-direction:column; gap:12px;">
                         ${dataBacheca.length === 0 ?
-                    `<div style="text-align:center; padding: 40px; color: var(--text-secondary);">Nessun avviso in bacheca</div>` :
-                    dataBacheca.map(item => `
-                                <div class="card" style="margin-bottom:0; padding:16px; border-left: 4px solid var(--orange);">
-                                    <div style="font-size:12px; color:var(--text-secondary); margin-bottom:4px; text-transform:uppercase; font-weight:700;">
-                                        ${item.data || item.date} - ${item.autore || 'Docente'}
+                    `<div style="text-align:center; padding: 40px; color: var(--text-secondary);">
+                        <i class="ph ph-megaphone" style="font-size: 48px; opacity: 0.3; margin-bottom: 12px; display: block;"></i>
+                        Nessun avviso in bacheca<br>
+                        <span style="font-size: 12px; margin-top: 8px; display: block;">Gli avvisi verranno caricati dopo la sincronizzazione con DidUP</span>
+                    </div>` :
+                    dataBacheca.map(item => {
+                        const data = item.data || item.date || item.datGiorno || 'Data non disponibile';
+                        const autore = item.autore || item.docente || 'Docente';
+                        const oggetto = item.oggetto || item.titolo || item.title || 'Avviso';
+                        const testo = item.testo || item.text || item.descrizione || item.description || '';
+                        const url = item.url || item.allegato || null;
+                        
+                        return `
+                                <div class="card" style="margin-bottom:0; padding:16px; border-left: 4px solid var(--orange); background: rgba(255, 159, 10, 0.05);">
+                                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                                        <i class="ph ph-bell" style="color: var(--orange); font-size: 18px;"></i>
+                                        <div style="font-size:12px; color:var(--text-secondary); text-transform:uppercase; font-weight:700;">
+                                            ${data} - ${autore}
+                                        </div>
                                     </div>
-                                    <div style="font-weight:600; font-size:16px; margin-bottom:4px;">${item.oggetto || 'Avviso'}</div>
-                                    <div style="font-size:14px; opacity:0.8; line-height:1.4;">${item.testo || item.text}</div>
-                                    ${item.url ? `<a href="${item.url}" target="_blank" style="color:var(--blue); font-size:12px; display:block; margin-top:8px;">Scarica Allegato <i class="ph-bold ph-arrow-up-right"></i></a>` : ''}
+                                    <div style="font-weight:600; font-size:16px; margin-bottom:8px; color: white;">${oggetto}</div>
+                                    ${testo ? `<div style="font-size:14px; opacity:0.8; line-height:1.5; color: var(--text-secondary); margin-bottom: ${url ? '8px' : '0'}; white-space: pre-wrap;">${testo}</div>` : ''}
+                                    ${url ? `<a href="${url}" target="_blank" style="color:var(--blue); font-size:12px; display:inline-flex; align-items:center; gap:4px; margin-top:8px; font-weight:600;">
+                                        <i class="ph ph-paperclip"></i> Scarica Allegato <i class="ph-bold ph-arrow-up-right" style="font-size:10px;"></i>
+                                    </a>` : ''}
                                 </div>
-                            `).join('')
+                            `;
+                    }).join('')
                 }
                     </div>
                 </div>
@@ -1123,10 +1464,28 @@
                 <div style="margin-top:20px;">
                     <div class="card">
                         <div style="font-size: 14px; color:var(--text-secondary); margin-bottom:8px;">Utente Collegato</div>
-                        <div style="font-size:18px; font-weight:700; margin-bottom:16px;">${state.user.name}</div>
-                        <div style="font-size:14px; color:  var(--text-secondary);">Classe:  ${state.user.class}</div>
+                        <div style="font-size:18px; font-weight:700; margin-bottom:16px;">${state.user.name || 'Non specificato'}</div>
+                        <div style="font-size:14px; color: var(--text-secondary); margin-bottom:12px;">Classe: ${state.user.class || 'Non specificata'}</div>
+                        ${state.lastSync ? `<div style="font-size:12px; color: var(--text-secondary); display:flex; align-items:center; gap:6px;">
+                            <i class="ph ph-clock" style="font-size:14px;"></i>
+                            Ultima sincronizzazione: ${state.lastSync}
+                        </div>` : ''}
                     </div>
-                    <button class="btn-primary" onclick="logout()" style="background:var(--red); margin-top:20px;">Esci e Disconnetti</button>
+                    <div class="card" style="margin-top:16px;">
+                        <div style="font-size: 14px; color:var(--text-secondary); margin-bottom:12px; font-weight:600;">Stato Connessione</div>
+                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+                            <div style="width:12px; height:12px; border-radius:50%; background:${state.didup.connected ? 'var(--green)' : 'var(--red)'};"></div>
+                            <span>DidUP: ${state.didup.connected ? 'Connesso' : 'Non connesso'}</span>
+                        </div>
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <div style="width:12px; height:12px; border-radius:50%; background:${state.isOffline ? 'var(--red)' : 'var(--green)'};"></div>
+                            <span>Server: ${state.isOffline ? 'Offline' : 'Online'}</span>
+                        </div>
+                    </div>
+                    <button class="btn-primary" onclick="logout()" style="background:var(--red); margin-top:20px; cursor:pointer;">Esci e Disconnetti</button>
+                    <button onclick="openArgoLogin()" style="background:var(--blue); width:100%; padding:16px; border-radius:14px; font-weight:600; font-size:16px; cursor:pointer; border:none; color:white; margin-top:12px;">
+                        <i class="ph ph-arrow-clockwise"></i> Riconnetti DidUP
+                    </button>
                 </div>
             </div>`;
         }
@@ -1179,8 +1538,9 @@
                     <input id="argo-user" placeholder="Nome Utente">
                     <input type="password" id="argo-pass" placeholder="Password">
                     
-                    <button id="login-btn" onclick="performArgoSync()" style="background:var(--blue); width:100%; padding: 14px; border-radius:12px; font-weight:700; margin-top:10px; border:none; color:white;">Accedi e Sincronizza</button>
+                    <button id="login-btn" onclick="performArgoSync()" style="background:var(--blue); width:100%; padding: 14px; border-radius:12px; font-weight:700; margin-top:10px; border:none; color:white; cursor:pointer;">Accedi e Sincronizza</button>
                     <button onclick="closeModal()" style="background:none; width:100%; padding: 10px; margin-top:5px; border:none; color:var(--text-secondary); cursor:pointer;">Annulla</button>
+                    <button onclick="testBackendConnection()" style="background:rgba(255,255,255,0.1); width:100%; padding: 10px; margin-top:5px; border:1px solid rgba(255,255,255,0.2); border-radius:12px; color:var(--text-secondary); cursor:pointer; font-size:12px;">🔍 Test Connessione Backend</button>
                 </div>
             </div>`;
 
@@ -1280,6 +1640,13 @@
 
                 if (data.success) {
                     console.log("✅ Login OK, saving...");
+                    console.log("📥 Dati ricevuti dal login:", {
+                        tasks: data.tasks?.length || 0,
+                        voti: data.voti?.length || 0,
+                        promemoria: data.promemoria?.length || data.announcements?.length || 0,
+                        student: data.student
+                    });
+                    
                     state.didup.connected = true;
                     if (data.session) {
                         const encodedUser = btoa(unescape(encodeURIComponent(user)));
@@ -1299,20 +1666,42 @@
                         state.user = data.student;
                         localStorage.setItem('argo_user', JSON.stringify(state.user)); // ⭐ Salva user
                     }
+                    
+                    // ⭐ IMPORTANTE: Carica TUTTI i dati dal login, non solo i tasks
                     if (data.tasks && data.tasks.length > 0) {
-                        state.tasks = data.tasks.map(t => ({ id: t.id, text: t.text, done: false }));
-                        saveTasks(); // ⭐ Salva dopo update
+                        updateTasks(data.tasks, false);
+                        console.log("✅ Compiti caricati:", state.tasks.length);
+                    }
+                    
+                    // ⭐ Carica voti dal login
+                    if (data.voti && data.voti.length > 0) {
+                        state.voti = data.voti;
+                        localStorage.setItem('argo_voti', JSON.stringify(state.voti));
+                        console.log("✅ Voti caricati:", state.voti.length);
+                    }
+                    
+                    // ⭐ Carica promemoria dal login
+                    if (data.promemoria && data.promemoria.length > 0) {
+                        state.promemoria = data.promemoria;
+                        localStorage.setItem('argo_promemoria', JSON.stringify(state.promemoria));
+                        console.log("✅ Promemoria caricati:", state.promemoria.length);
+                    } else if (data.announcements && data.announcements.length > 0) {
+                        state.promemoria = data.announcements;
+                        localStorage.setItem('argo_promemoria', JSON.stringify(state.promemoria));
+                        console.log("✅ Promemoria caricati (announcements):", state.promemoria.length);
                     }
 
                     state.isLoggedIn = true;
                     state.isOffline = false;
+                    state.lastSync = new Date().toLocaleTimeString();
                     updateOfflineBadge();
 
                     closeModal();
-                    alert(`✅ Benvenuto ${data.student.name}!`);
+                    alert(`✅ Benvenuto ${data.student?.name || user}! Dati sincronizzati.`);
                     render();
                 } else {
-                    alert("❌ Credenziali errate");
+                    alert("❌ Credenziali errate: " + (data.error || "Errore sconosciuto"));
+                    console.error("❌ Login fallito:", data);
                 }
             } catch (e) {
                 alert("❌ Errore:  " + e.message);
@@ -1404,7 +1793,9 @@
             if (t) {
                 t.done = !t.done;
                 saveTasks();
-                localStorage.setItem('argo_reminders', JSON.stringify(state.reminders));
+                if (state.reminders.find(x => x.id === id)) {
+                    localStorage.setItem('argo_reminders', JSON.stringify(state.reminders));
+                }
                 render();
             }
         }
@@ -1430,6 +1821,46 @@
         function setFeedClass(c) {
             state.feed.classFilter = c;
             render();
+        }
+
+        // ⭐ Funzione di test per verificare la connessione backend
+        async function testBackendConnection() {
+            const statusEl = document.getElementById('server-status');
+            if (statusEl) {
+                statusEl.innerHTML = '<span style="width: 8px; height: 8px; background: var(--orange); border-radius: 50%;"></span> Test in corso...';
+                statusEl.style.color = "var(--orange)";
+            }
+            
+            try {
+                console.log("🔍 Test connessione backend...");
+                
+                // Test 1: Health check
+                const healthRes = await fetch(`${API_BASE_URL}/health`, {
+                    method: 'GET',
+                    headers: { 'Accept': 'application/json' }
+                });
+                console.log("✅ Health check:", healthRes.status, healthRes.ok);
+                
+                // Test 2: Verifica formato risposta (se disponibile)
+                if (healthRes.ok) {
+                    const healthData = await healthRes.json().catch(() => ({}));
+                    console.log("📋 Health response:", healthData);
+                }
+                
+                if (statusEl) {
+                    statusEl.innerHTML = '<span style="width: 8px; height: 8px; background: var(--green); border-radius: 50%;"></span> Backend raggiungibile';
+                    statusEl.style.color = "var(--green)";
+                }
+                
+                alert("✅ Backend raggiungibile! Controlla la console per i dettagli.");
+            } catch (e) {
+                console.error("❌ Test fallito:", e);
+                if (statusEl) {
+                    statusEl.innerHTML = '<span style="width: 8px; height: 8px; background: var(--red); border-radius: 50%;"></span> Backend non raggiungibile';
+                    statusEl.style.color = "var(--red)";
+                }
+                alert("❌ Backend non raggiungibile: " + e.message + "\n\nVerifica:\n- URL backend corretto: " + API_BASE_URL + "\n- Server online\n- CORS configurato");
+            }
         }
 
         // Init - render will be called by DOMContentLoaded
