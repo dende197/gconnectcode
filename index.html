@@ -452,22 +452,14 @@
         const modalContainer = document.getElementById('modals');
         const offlineBadge = document.getElementById('offline-badge');
 
-        // ⭐ INITIALIZE APP ON LOAD
+        // ⭐ INITIALIZE APP ON LOAD - Versione semplificata come nel codice vecchio che funzionava
         document.addEventListener('DOMContentLoaded', async () => {
             console.log("🚀 App Loading...");
-            
-            // ⭐ Controlla se ci sono credenziali salvate (metodo più robusto)
+            const isLoggedIn = sessionManager.isLoggedIn();
             const savedSession = sessionManager.load();
-            const hasSchool = localStorage.getItem('argo_school');
-            const hasUserCred = localStorage.getItem('argo_user_cred');
-            const hasPass = localStorage.getItem('argo_pass');
-            const isLoggedInFlag = sessionManager.isLoggedIn();
-            
-            // ⭐ Considera loggato se c'è almeno una sessione O credenziali separate
-            const hasValidSession = (isLoggedInFlag && savedSession) || (hasSchool && hasUserCred && hasPass);
-            
-            if (hasValidSession) {
-                console.log("✅ Sessione/credenziali trovate - ripristino stato...");
+
+            if (isLoggedIn && savedSession) {
+                console.log("✅ Sessione valida trovata!");
                 
                 // ⭐ Carica tasks con done persistito
                 const cachedTasks = localStorage.getItem('argo_tasks');
@@ -485,24 +477,25 @@
                 const cachedUser = localStorage.getItem('argo_user');
                 if (cachedUser) {
                     try {
-                    state.user = JSON.parse(cachedUser);
+                        state.user = JSON.parse(cachedUser);
                         console.log("👤 Utente caricato:", state.user.name);
                     } catch (e) {
                         console.error("Errore caricamento user:", e);
                     }
-                } else if (savedSession && savedSession.student) {
+                } else if (savedSession.student) {
                     state.user = savedSession.student;
                     localStorage.setItem('argo_user', JSON.stringify(state.user));
                 }
-
-                // ⭐ Restore voti e promemoria
+                
+                // ⭐ CRITICO: Carica voti e promemoria da localStorage
                 const cachedVoti = localStorage.getItem('argo_voti');
                 if (cachedVoti) {
                     try {
                         state.voti = JSON.parse(cachedVoti);
-                        console.log("📊 Voti caricati:", state.voti.length);
+                        console.log("📊 Voti caricati da cache:", state.voti.length);
                     } catch (e) {
                         console.error("Errore caricamento voti:", e);
+                        state.voti = [];
                     }
                 }
                 
@@ -510,53 +503,23 @@
                 if (cachedProm) {
                     try {
                         state.promemoria = JSON.parse(cachedProm);
-                        console.log("📢 Promemoria caricati:", state.promemoria.length);
+                        console.log("📢 Promemoria caricati da cache:", state.promemoria.length);
                     } catch (e) {
                         console.error("Errore caricamento promemoria:", e);
-                    }
-                }
-
-                const cachedGrades = localStorage.getItem('argo_grades');
-                if (cachedGrades) {
-                    try {
-                        state.grades = JSON.parse(cachedGrades);
-                    } catch (e) {
-                        console.error("Errore caricamento grades:", e);
+                        state.promemoria = [];
                     }
                 }
                 
-                const cachedAnn = localStorage.getItem('argo_announcements');
-                if (cachedAnn) {
-                    try {
-                        state.announcements = JSON.parse(cachedAnn);
-                    } catch (e) {
-                        console.error("Errore caricamento announcements:", e);
-                    }
-                }
-                
-                const cachedRem = localStorage.getItem('argo_reminders');
-                if (cachedRem) {
-                    try {
-                        state.reminders = JSON.parse(cachedRem);
-                    } catch (e) {
-                        console.error("Errore caricamento reminders:", e);
-                    }
-                }
-                
-                // ⭐ Imposta stato loggato
                 state.isLoggedIn = true;
-                state.didup.connected = hasValidSession; // Considera connesso se ci sono credenziali
+                state.didup.connected = true;
                 state.view = 'home';
-
                 render();
 
-                // ⭐ Sync in background (non blocca il rendering)
+                // ⭐ Sync in background passando la sessione salvata (come nel codice vecchio)
                 console.log("🔄 Sincronizzazione in background...");
-                performSync().catch(e => {
-                    console.error("Errore sync in background:", e);
-                });
+                await performSync(savedSession);
             } else {
-                console.log("❌ Nessuna sessione/credenziali - mostro login");
+                console.log("❌ No session - showing login");
                 state.isLoggedIn = false;
                 state.view = 'login';
                 render();
@@ -571,38 +534,21 @@
             }
         }
 
-        async function performSync() {
+        async function performSync(sessionData) {
             if (state.syncing) return;
             state.syncing = true;
             render();
+            
+            // ⭐ Usa la sessione passata o carica quella salvata (come nel codice vecchio)
+            if (!sessionData) sessionData = sessionManager.load();
+            if (!sessionData) {
+                console.warn("⚠️ Nessuna sessione disponibile per sync");
+                state.syncing = false;
+                return;
+            }
 
             try {
-                // ⭐ Prova prima con le credenziali separate
-                const schoolCode = localStorage.getItem('argo_school');
-                const storedUser = localStorage.getItem('argo_user_cred');
-                const storedPass = localStorage.getItem('argo_pass');
-                
-                // ⭐ Fallback: se non ci sono credenziali separate, usa la sessione salvata
-                const savedSession = sessionManager.load();
-                
-                let requestBody;
-                if (schoolCode && storedUser && storedPass) {
-                    // Usa credenziali separate (metodo nuovo)
-                    requestBody = {
-                        schoolCode: schoolCode,
-                        storedUser: storedUser,
-                        storedPass: storedPass
-                    };
-                    console.log("🔄 Sync con credenziali separate");
-                } else if (savedSession) {
-                    // Usa sessione completa (metodo vecchio)
-                    requestBody = savedSession;
-                    console.log("🔄 Sync con sessione salvata");
-                } else {
-                    throw new Error("Nessuna credenziale disponibile. Effettua il login.");
-                }
-
-                console.log("📤 Invio richiesta sync a:", `${API_BASE_URL}/sync`);
+                console.log("📤 Invio richiesta sync con sessione salvata");
                 
                 const response = await fetch(`${API_BASE_URL}/sync`, {
                     method: 'POST',
@@ -610,12 +556,11 @@
                         'Content-Type': 'application/json',
                         'Accept': 'application/json'
                     },
-                    body: JSON.stringify(requestBody)
+                    body: JSON.stringify(sessionData)
                 });
 
                 if (!response.ok) {
-                    const errorText = await response.text();
-                    throw new Error(`HTTP ${response.status}: ${errorText}`);
+                    throw new Error(`Server error: ${response.status}`);
                 }
 
                 const data = await response.json();
@@ -624,59 +569,48 @@
                     tasksCount: data.tasks?.length || 0,
                     votiCount: data.voti?.length || 0,
                     promemoriaCount: data.promemoria?.length || data.announcements?.length || 0,
-                    error: data.error,
-                    rawData: data
+                    error: data.error
                 });
                 
                 // ⭐ DEBUG: Mostra dettagli completi in console
-                if (data.tasks) console.log("📋 Tasks ricevuti:", data.tasks);
-                if (data.voti) console.log("📋 Voti ricevuti:", data.voti);
-                if (data.promemoria) console.log("📋 Promemoria ricevuti:", data.promemoria);
-                if (data.announcements) console.log("📋 Announcements ricevuti:", data.announcements);
+                if (data.tasks && data.tasks.length > 0) console.log("📋 Tasks ricevuti:", data.tasks);
+                if (data.voti && data.voti.length > 0) console.log("📋 Voti ricevuti:", data.voti);
+                if (data.promemoria && data.promemoria.length > 0) console.log("📋 Promemoria ricevuti:", data.promemoria);
+                if (data.announcements && data.announcements.length > 0) console.log("📋 Announcements ricevuti:", data.announcements);
 
-                if (data.success) {
-                    // Aggiorna i compiti
-                    if (data.tasks && Array.isArray(data.tasks) && data.tasks.length > 0) {
-                        updateTasks(data.tasks);
-                        console.log("✅ Compiti aggiornati:", state.tasks.length);
-                    } else {
-                        console.warn("⚠️ Nessun compito ricevuto o array vuoto");
+                if (data.success && data.tasks) {
+                    // ⭐ Gestione compiti (come nel codice vecchio)
+                    if (data.tasks.length === 0 && state.tasks.length > 0) {
+                        console.warn("⚠️ Il server ha mandato 0 compiti. Mantengo quelli locali per sicurezza.");
+                        state.isOffline = false;
+                        updateOfflineBadge();
+                        render();
+                        state.syncing = false;
+                        return;
                     }
-
-                    // Aggiorna i voti e salva in localStorage
-                    if (data.voti && Array.isArray(data.voti)) {
-                        state.voti = data.voti;
-                        try {
-                            localStorage.setItem('argo_voti', JSON.stringify(state.voti));
-                            console.log("💾 Voti salvati:", state.voti.length);
-                            if (state.voti.length === 0) {
-                                console.warn("⚠️ Array voti vuoto - il backend potrebbe non recuperare i voti da DidUP");
-                            }
-                        } catch (e) {
-                            console.error("❌ Errore salvataggio voti:", e);
+                    updateTasks(data.tasks, true);
+                    
+                    // ⭐ CRITICO: Aggiorna voti e salva SEMPRE
+                    if (data.voti !== undefined) {
+                        state.voti = Array.isArray(data.voti) ? data.voti : [];
+                        localStorage.setItem('argo_voti', JSON.stringify(state.voti));
+                        console.log("💾 Voti salvati:", state.voti.length);
+                        if (state.voti.length === 0) {
+                            console.warn("⚠️ Array voti vuoto - il backend potrebbe non recuperare i voti da DidUP");
                         }
-                    } else {
-                        console.warn("⚠️ Nessun voto ricevuto o formato non valido");
                     }
-
-                    // Aggiorna la bacheca (promemoria) e salva in localStorage
-                    const promemoriaData = data.promemoria || data.announcements || [];
-                    if (Array.isArray(promemoriaData)) {
-                        state.promemoria = promemoriaData;
-                        if (state.promemoria.length > 0) {
-                            try {
-                                localStorage.setItem('argo_promemoria', JSON.stringify(state.promemoria));
-                                console.log("💾 Promemoria salvati:", state.promemoria.length);
-                            } catch (e) {
-                                console.error("❌ Errore salvataggio promemoria:", e);
-                            }
-                        } else {
+                    
+                    // ⭐ CRITICO: Aggiorna promemoria e salva SEMPRE
+                    const promemoriaData = data.promemoria || data.announcements;
+                    if (promemoriaData !== undefined) {
+                        state.promemoria = Array.isArray(promemoriaData) ? promemoriaData : [];
+                        localStorage.setItem('argo_promemoria', JSON.stringify(state.promemoria));
+                        console.log("💾 Promemoria salvati:", state.promemoria.length);
+                        if (state.promemoria.length === 0) {
                             console.warn("⚠️ Array promemoria vuoto - il backend potrebbe non recuperare i promemoria da DidUP");
                         }
-                    } else {
-                        console.warn("⚠️ Nessun promemoria ricevuto o formato non valido");
                     }
-
+                    
                     state.lastSync = new Date().toLocaleTimeString();
                     state.isOffline = false;
                     state.didup.connected = true;
@@ -685,57 +619,31 @@
                         voti: state.voti.length,
                         promemoria: state.promemoria.length
                     });
+                    updateOfflineBadge();
+                    render();
                 } else {
-                    state.isOffline = true;
-                    const errorMsg = data.error || "Errore sconosciuto";
-                    console.warn("⚠️ Sync fallito:", errorMsg);
-                    
-                    // Se la sessione è scaduta, chiedi di rifare login
-                    if (errorMsg.includes('sessione') || errorMsg.includes('scaduta') || errorMsg.includes('expired') || errorMsg.includes('invalid') || errorMsg.includes('login')) {
-                        if (confirm("⚠️ La sessione è scaduta. Vuoi effettuare nuovamente il login?")) {
-                            sessionManager.clear();
-                            state.isLoggedIn = false;
-                            state.view = 'login';
-                            render();
-                            openArgoLogin();
-                        }
-                        return;
-                    }
+                    throw new Error("Sessione non valida");
                 }
             } catch (e) {
-                console.error("❌ Errore sync:", e);
-                state.isOffline = true;
-                
-                // Mostra messaggio all'utente se è un errore di rete
-                if (e.name === 'TypeError' && e.message.includes('fetch')) {
-                    console.warn("⚠️ Errore di connessione - usando dati cached");
-                    // Carica dati cached se disponibili
-                    const cachedVoti = localStorage.getItem('argo_voti');
-                    if (cachedVoti) {
-                        try {
-                            state.voti = JSON.parse(cachedVoti);
-                            console.log("📦 Voti caricati da cache:", state.voti.length);
-                        } catch (err) {
-                            console.error("Errore parsing voti cached:", err);
-                        }
+                console.error("⚠️ Errore Sync:", e);
+                if (e.message.includes("Sessione non valida")) {
+                    // ⭐ Prova silent login se abbiamo le credenziali (come nel codice vecchio)
+                    if (sessionData && sessionData.storedUser && sessionData.storedPass) {
+                        await performSilentLogin(sessionData.schoolCode, sessionData.storedUser, sessionData.storedPass);
+                    } else {
+                        sessionManager.clear();
+                        state.isLoggedIn = false;
+                        state.view = 'login';
+                        alert("❌ Sessione scaduta. Effettua di nuovo il login.");
+                        render();
                     }
-                    const cachedProm = localStorage.getItem('argo_promemoria');
-                    if (cachedProm) {
-                        try {
-                            state.promemoria = JSON.parse(cachedProm);
-                            console.log("📦 Promemoria caricati da cache:", state.promemoria.length);
-                        } catch (err) {
-                            console.error("Errore parsing promemoria cached:", err);
-                        }
-                    }
-                    alert("⚠️ Errore di connessione al server. Verifica la connessione internet.");
                 } else {
-                    alert("❌ Errore durante la sincronizzazione: " + e.message);
+                    state.isOffline = true;
+                    updateOfflineBadge();
+                    render();
                 }
             } finally {
                 state.syncing = false;
-                updateOfflineBadge();
-                render();
             }
         }
 
@@ -777,19 +685,31 @@
                     };
                     sessionManager.save(newSession);
 
-                    // ⭐ Carica TUTTI i dati, non solo tasks
-                    if (data.tasks) updateTasks(data.tasks, false);
-                    if (data.voti) {
-                        state.voti = data.voti;
+                    // ⭐ Carica TUTTI i dati
+                    if (data.tasks) updateTasks(data.tasks, true);
+                    
+                    // ⭐ CRITICO: Carica voti
+                    if (data.voti !== undefined) {
+                        state.voti = Array.isArray(data.voti) ? data.voti : [];
                         localStorage.setItem('argo_voti', JSON.stringify(state.voti));
+                        console.log("✅ Voti caricati nel silent login:", state.voti.length);
                     }
-                    if (data.promemoria) {
-                        state.promemoria = data.promemoria;
+                    
+                    // ⭐ CRITICO: Carica promemoria
+                    const promemoriaData = data.promemoria || data.announcements;
+                    if (promemoriaData !== undefined) {
+                        state.promemoria = Array.isArray(promemoriaData) ? promemoriaData : [];
                         localStorage.setItem('argo_promemoria', JSON.stringify(state.promemoria));
+                        console.log("✅ Promemoria caricati nel silent login:", state.promemoria.length);
                     }
-                    if (data.student) state.user = data.student;
+                    
+                    if (data.student) {
+                        state.user = data.student;
+                        localStorage.setItem('argo_user', JSON.stringify(state.user));
+                    }
 
                     state.isOffline = false;
+                    state.didup.connected = true;
                     state.lastSync = new Date().toLocaleTimeString();
                     updateOfflineBadge();
                     render();
@@ -1709,75 +1629,64 @@
                         student: data.student
                     });
                     
-                    // ⭐ CRITICO: Salva SEMPRE le credenziali per persistenza
-                        const encodedUser = btoa(unescape(encodeURIComponent(user)));
-                        const encodedPass = btoa(unescape(encodeURIComponent(pass)));
-
-                    // ⭐ Salva credenziali separate (metodo principale)
-                    localStorage.setItem('argo_school', school);
-                    localStorage.setItem('argo_user_cred', encodedUser);
-                    localStorage.setItem('argo_pass', encodedPass);
-                    console.log("💾 Credenziali salvate per persistenza");
-                    
-                    // ⭐ Salva anche la sessione se disponibile
+                    // ⭐ CRITICO: Salva sessione con credenziali codificate (come nel codice vecchio che funzionava)
                     if (data.session) {
-                        data.session.storedUser = encodedUser;
-                        data.session.storedPass = encodedPass;
+                        data.session.storedUser = btoa(unescape(encodeURIComponent(user)));
+                        data.session.storedPass = btoa(unescape(encodeURIComponent(pass)));
                         data.session.schoolCode = school;
                         sessionManager.save(data.session);
-                        console.log("💾 Sessione salvata");
+                        console.log("💾 Sessione salvata con credenziali");
                     } else {
-                        // ⭐ Se non c'è sessione, crea una minima per il flag
+                        // ⭐ Se non c'è sessione dal backend, crea una con le credenziali
                         sessionManager.save({
                             schoolCode: school,
-                            storedUser: encodedUser,
-                            storedPass: encodedPass
+                            storedUser: btoa(unescape(encodeURIComponent(user))),
+                            storedPass: btoa(unescape(encodeURIComponent(pass)))
                         });
+                        console.log("💾 Sessione minima creata con credenziali");
                     }
                     
-                    state.didup.connected = true;
-                    
-                    // ⭐ Salva student/user
+                    // ⭐ Salva user
                     if (data.student) {
                         state.user = data.student;
                         localStorage.setItem('argo_user', JSON.stringify(state.user));
                         console.log("💾 User salvato:", state.user.name);
                     }
                     
-                    // ⭐ IMPORTANTE: Carica TUTTI i dati dal login
-                    if (data.tasks && Array.isArray(data.tasks)) {
-                        updateTasks(data.tasks, false);
+                    // ⭐ Carica compiti
+                    if (data.tasks && data.tasks.length > 0) {
+                        state.tasks = data.tasks.map(t => ({ id: t.id, text: t.text, done: false }));
+                        saveTasks();
                         console.log("✅ Compiti caricati:", state.tasks.length);
-                    } else {
-                        console.warn("⚠️ Nessun compito nel login response");
                     }
                     
-                    // ⭐ Carica voti dal login (anche se array vuoto)
+                    // ⭐ CRITICO: Carica voti e salva SEMPRE
                     if (data.voti !== undefined) {
                         state.voti = Array.isArray(data.voti) ? data.voti : [];
                         localStorage.setItem('argo_voti', JSON.stringify(state.voti));
-                        console.log("✅ Voti caricati:", state.voti.length);
+                        console.log("✅ Voti caricati e salvati:", state.voti.length);
                         if (state.voti.length === 0) {
-                            console.warn("⚠️ Array voti vuoto - il backend potrebbe non recuperare i voti da DidUP");
+                            console.warn("⚠️ ATTENZIONE: Array voti vuoto - il backend NON sta recuperando i voti da DidUP");
                         }
                     } else {
-                        console.warn("⚠️ Campo 'voti' non presente nella risposta");
+                        console.warn("⚠️ ATTENZIONE: Campo 'voti' non presente nella risposta del login");
                     }
                     
-                    // ⭐ Carica promemoria dal login (anche se array vuoto)
+                    // ⭐ CRITICO: Carica promemoria e salva SEMPRE
                     const promemoriaData = data.promemoria || data.announcements;
                     if (promemoriaData !== undefined) {
                         state.promemoria = Array.isArray(promemoriaData) ? promemoriaData : [];
                         localStorage.setItem('argo_promemoria', JSON.stringify(state.promemoria));
-                        console.log("✅ Promemoria caricati:", state.promemoria.length);
+                        console.log("✅ Promemoria caricati e salvati:", state.promemoria.length);
                         if (state.promemoria.length === 0) {
-                            console.warn("⚠️ Array promemoria vuoto - il backend potrebbe non recuperare i promemoria da DidUP");
+                            console.warn("⚠️ ATTENZIONE: Array promemoria vuoto - il backend NON sta recuperando i promemoria da DidUP");
                         }
                     } else {
-                        console.warn("⚠️ Campo 'promemoria'/'announcements' non presente nella risposta");
+                        console.warn("⚠️ ATTENZIONE: Campo 'promemoria'/'announcements' non presente nella risposta del login");
                     }
 
                     state.isLoggedIn = true;
+                    state.didup.connected = true;
                     state.isOffline = false;
                     state.lastSync = new Date().toLocaleTimeString();
                     updateOfflineBadge();
